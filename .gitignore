@@ -1,0 +1,40 @@
+# --- Python bytecode / cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Virtual environment ---
+venv/
+.env.bak/
+.venv/
+env/
+ENV/
+
+# --- Environment variables / secrets ---
+.env
+.env.*.local
+*.env
+
+# --- Flask / instance data (if you add it later) ---
+instance/
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Test / coverage artifacts ---
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# --- Tooling / metadata ---
+*.log
+.mypy_cache/
+.cache/
+.idea/
+.vscode/
+
+# --- OS / editor junk ---
+.DS_Store
+Thumbs.db
