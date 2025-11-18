@@ -5,10 +5,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Example: postgresql://user:password@localhost:5432/smart_meeting_db
+# DATABASE_URL = os.getenv(
+#     "DATABASE_URL",
+#     "postgresql://postgres:MyStrongPass123!@localhost:5433/smart_meeting_db"
+# )
+
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://postgres:MyStrongPass123!@localhost:5433/smart_meeting_db"
 )
+
 
 # Secret key for JWT – in real deployment this should be strong and stored safely
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change_this_in_production")
