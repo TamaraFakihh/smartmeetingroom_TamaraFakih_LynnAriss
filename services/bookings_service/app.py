@@ -393,10 +393,8 @@ def check_room_availability():
       room_id: int
       start_time: ISO datetime
       end_time: ISO datetime
-
-    Example:
-      /bookings/check?room_id=1&start_time=2025-11-20T10:00:00&end_time=2025-11-20T11:00:00
     """
+    
     room_id_str = request.args.get("room_id")
     start_time_str = request.args.get("start_time")
     end_time_str = request.args.get("end_time")

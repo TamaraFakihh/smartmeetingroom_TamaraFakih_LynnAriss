@@ -1,7 +1,7 @@
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from common.config import DATABASE_URL
-from psycopg2.extras import RealDictCursor
+
 
 def get_connection():
     """
@@ -261,3 +261,64 @@ def delete_room(room_id):
     finally:
         conn.close()
 
+def fetch_available_rooms(min_capacity=None, location=None, required_equipment=None):
+    required_equipment = required_equipment or []
+    eq_names = [e.strip().lower() for e in required_equipment if isinstance(e, str) and e.strip()]
+
+    params = []
+    where = []
+    sql = """
+        SELECT r.room_id, r.room_name, r.capacity, r.location
+          FROM rooms r
+    """
+
+    if eq_names:
+        placeholders = ", ".join(["%s"] * len(eq_names))
+        sql += f"""
+        JOIN (
+            SELECT re.room_id
+              FROM room_equipment re
+              JOIN equipment e ON e.equip_id = re.equipment_id
+             WHERE LOWER(e.name) IN ({placeholders})
+          GROUP BY re.room_id
+            HAVING COUNT(DISTINCT LOWER(e.name)) = {len(eq_names)}
+        ) rq ON rq.room_id = r.room_id
+        """
+        params.extend(eq_names)  # equipment params first
+
+    if min_capacity is not None:
+        where.append("r.capacity >= %s")
+        params.append(min_capacity)
+
+    if location is not None:
+        where.append("r.location = %s")
+        params.append(location)
+
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(sql, tuple(params))
+                return cur.fetchall()
+    finally:
+        conn.close()
+
+def fetch_bookings_for_room(room_id):
+    """
+    Fetch all bookings for a given room from the bookings table.
+    Returns a list of booking dictionaries ordered by start_time.
+    """
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT * FROM bookings WHERE room_id = %s ORDER BY start_time;",
+                    (room_id,)
+                )
+                return cur.fetchall()
+    finally:
+        conn.close()

@@ -1,7 +1,7 @@
 from flask import Flask, jsonify, request
-from services.rooms_service.models import Room
+from datetime import datetime, timedelta
 from psycopg2.errors import UniqueViolation
-
+from services.rooms_service.models import Room
 from services.rooms_service.db import (init_rooms_table,
                                        init_equipment_table,
                                        init_room_equipment_table,
@@ -12,6 +12,9 @@ from services.rooms_service.db import (init_rooms_table,
                                        set_room_equipment,
                                        update_room,
                                        delete_room,
+                                       fetch_available_rooms,
+                                       fetch_bookings_for_room
+
                                        )
 
 
@@ -158,6 +161,91 @@ def delete_room_endpoint(room_id: int):
     if not deleted:
         return jsonify({"error": "Room not found."}), 404
     return jsonify({"message": "Room deleted successfully."}), 200
+
+# ─────────────────────────────────────────────
+# 6. RETRIEVE AVAILABLE ROOMS 
+# ─────────────────────────────────────────────
+@app.route("/rooms/<int:room_id>/status", methods=["GET"])
+def get_room_status(room_id: int):
+    """
+    Returns all bookings for the room and computes available time intervals for the day.
+    """
+    # Verify room exists
+    room = fetch_room(room_id)
+    if not room:
+        return jsonify({"error": "Room not found."}), 404
+
+    # Fetch all bookings for this room
+    bookings = fetch_bookings_for_room(room_id) or []
+
+    def parse_dt(value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except Exception:
+                return None
+        return None
+
+    def booking_to_dict(r):
+        start = parse_dt(r.get("start_time"))
+        end = parse_dt(r.get("end_time"))
+        created = parse_dt(r.get("created_at"))
+        return {
+            "booking_id": r.get("booking_id"),
+            "user_id": r.get("user_id"),
+            "room_id": r.get("room_id"),
+            "start_time": start.isoformat() if start else None,
+            "end_time": end.isoformat() if end else None,
+            "created_at": created.isoformat() if created else None,
+        }
+
+    # Filter bookings for the current day
+    today = datetime.now().date()
+    start_of_day = datetime.combine(today, datetime.min.time())  # 00:00
+    end_of_day = datetime.combine(today, datetime.max.time())    # 24:00
+
+    booked_ranges = []
+    for b in bookings:
+        start = parse_dt(b.get("start_time"))
+        end = parse_dt(b.get("end_time"))
+        if start and end and start.date() == today and end.date() == today:
+            booked_ranges.append((start, end))
+
+    # Sort by start time
+    booked_ranges.sort()
+
+    # Compute availability intervals for the day
+    availability_intervals = []
+    current_start = start_of_day
+
+    for b_start, b_end in booked_ranges:
+        # Add interval before the current booking
+        if b_start > current_start:
+            availability_intervals.append({
+                "start_time": current_start.isoformat(),
+                "end_time": b_start.isoformat()
+            })
+        # Update current_start to the end of the current booking
+        current_start = max(current_start, b_end)
+
+    # Add final interval if room is free after the last booking
+    if current_start < end_of_day:
+        availability_intervals.append({
+            "start_time": current_start.isoformat(),
+            "end_time": end_of_day.isoformat()
+        })
+
+    return jsonify({
+        "room_id": room_id,
+        "room_name": room.get("room_name"),
+        "room_available": len(availability_intervals) > 0,
+        "bookings": [booking_to_dict(r) for r in bookings if parse_dt(r.get("start_time")).date() == today],
+        "availability_intervals": availability_intervals
+    }), 200
 
 # ─────────────────────────────────────────────
 # MAIN

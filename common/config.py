@@ -5,11 +5,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Example: postgresql://user:password@localhost:5432/smart_meeting_db
-# DATABASE_URL = os.getenv(
-#     "DATABASE_URL",
-#     "postgresql://postgres:MyStrongPass123!@localhost:5433/smart_meeting_db"
-# )
-
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://postgres:MyStrongPass123!@localhost:5433/smart_meeting_db"
