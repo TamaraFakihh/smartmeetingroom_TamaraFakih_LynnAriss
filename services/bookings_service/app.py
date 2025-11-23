@@ -14,70 +14,18 @@ from services.bookings_service.db import (
 )
 from services.bookings_service.models import Booking
 from common.security import decode_access_token
-
+from common.RBAC import (
+    require_auth,
+    is_human_user,
+    is_admin,
+    is_admin_or_facility,
+    is_auditor,
+)
 
 app = Flask(__name__)
 
 # Initialize DB tables once at startup
 init_bookings_table()
-
-
-# ─────────────────────────────────────────────
-# Auth & RBAC helpers (mirroring users_service style)
-# ─────────────────────────────────────────────
-
-def get_current_user_payload():
-    """
-    Helper to read Authorization header, decode JWT, and return token payload.
-    """
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return None
-
-    token = auth_header.split(" ", 1)[1]
-    payload = decode_access_token(token)
-    return payload
-
-
-def require_auth():
-    """
-    Helper to enforce authentication.
-    Returns (payload, error_response) where error_response is a Flask response or None.
-    """
-    payload = get_current_user_payload()
-    if not payload:
-        return None, (jsonify({"error": "Unauthorized."}), 401)
-    return payload, None
-
-
-def is_admin(payload: dict) -> bool:
-    return payload.get("role") == "admin"
-
-
-def is_facility_manager(payload: dict) -> bool:
-    return payload.get("role") == "facility_manager"
-
-
-def is_admin_or_facility(payload: dict) -> bool:
-    return payload.get("role") in {"admin", "facility_manager"}
-
-
-def is_auditor(payload: dict) -> bool:
-    return payload.get("role") == "auditor"
-
-
-def is_human_user(payload: dict) -> bool:
-    """
-    Exclude 'service_account' from normal interactive operations.
-    """
-    return payload.get("role") in {
-        "regular",
-        "admin",
-        "facility_manager",
-        "moderator",
-        "auditor",
-    }
-
 
 # ─────────────────────────────────────────────
 # Utility: datetime parsing & validation

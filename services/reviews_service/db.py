@@ -18,6 +18,8 @@ def init_reviews_table():
         rating INT CHECK (rating BETWEEN 1 AND 5), -- Rating between 1 and 5
         comment TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        is_flagged BOOLEAN DEFAULT FALSE,
+        is_hidden BOOLEAN DEFAULT FALSE,
         FOREIGN KEY (room_id) REFERENCES rooms(room_id),
         FOREIGN KEY (user_id) REFERENCES users(id)
     );
@@ -123,12 +125,12 @@ def delete_review(review_id):
 
 def fetch_review_by_room_id(room_id):
     """
-    Fetch a single review by its ID.
+    Fetch reviews of a room its ID.
     """
     select_sql = """
     SELECT review_id, room_id, user_id, rating, comment, created_at
     FROM reviews
-    WHERE room_id = %s;
+    WHERE room_id = %s AND is_hidden = FALSE;
     """
     conn = get_connection()
     try:
@@ -138,24 +140,6 @@ def fetch_review_by_room_id(room_id):
                 return cur.fetchall()
     finally:
         conn.close()
-
-def report_review(review_id, reporter_user_id, reason):
-    """
-    Report a review for inappropriate content.
-    """
-    insert_sql = """
-    INSERT INTO review_reports (review_id, reporter_user_id, reason)
-    VALUES (%s, %s, %s);
-    """
-    conn = get_connection()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(insert_sql, (review_id, reporter_user_id, reason))
-                return cur.rowcount  # Returns number of rows inserted
-    finally:
-        conn.close()
-
 
 def init_reports_table():
     """
@@ -206,16 +190,75 @@ def report_review(review_id, reporter_user_id, reason):
     """
     Report a review for inappropriate content.
     """
-    insert_sql = """
-    INSERT INTO reports (review_id, reporter_user_id, report_reason)
-    VALUES (%s, %s, %s)
-    RETURNING report_id, review_id, reporter_user_id, report_reason, created_at;
+    report_review_sql = """
+    WITH report_insert AS (
+        INSERT INTO reports (review_id, reporter_user_id, report_reason)
+        VALUES (%s, %s, %s)
+        RETURNING report_id, review_id, reporter_user_id, report_reason, created_at
+    )
+    SELECT * FROM report_insert;
     """
     conn = get_connection()
     try:
         with conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(insert_sql, (review_id, reporter_user_id, reason))
+                cur.execute(report_review_sql, (review_id, reporter_user_id, reason))
                 return cur.fetchone()  
+    finally:
+        conn.close()
+
+def flag_unflag_review(review_id, is_flagged):
+    """
+    Flag or unflag a review as inappropriate.
+    """
+    update_sql = """
+    UPDATE reviews
+    SET is_flagged = %s
+    WHERE review_id = %s
+    RETURNING review_id, room_id, user_id, rating, comment, created_at, is_flagged;
+    """
+
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(update_sql, (is_flagged, review_id))
+                return cur.fetchone()
+    finally:
+        conn.close()
+
+def fetch_all_reports():
+    """
+    Fetch all reports from the database.
+    """
+    select_sql = """
+    SELECT report_id, review_id, reporter_user_id, report_reason, created_at
+    FROM reports;
+    """
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(select_sql)
+                return cur.fetchall()
+    finally:
+        conn.close()
+
+def hide_review(review_id, is_hidden):
+    """
+    Hide or unhide a review.
+    """
+    update_sql = """
+    UPDATE reviews
+    SET is_hidden = %s
+    WHERE review_id = %s
+    RETURNING review_id, room_id, user_id, rating, comment, created_at, is_hidden;
+    """
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(update_sql, (is_hidden, review_id))
+                return cur.fetchone()
     finally:
         conn.close()

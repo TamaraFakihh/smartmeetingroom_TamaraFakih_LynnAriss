@@ -1,7 +1,8 @@
 from flask import Flask, jsonify, request
-from datetime import datetime, timedelta
+from datetime import datetime
 from psycopg2.errors import UniqueViolation
 from services.rooms_service.models import Room
+from services.bookings_service.models import Booking
 from services.rooms_service.db import (init_rooms_table,
                                        init_equipment_table,
                                        init_room_equipment_table,
@@ -12,11 +13,19 @@ from services.rooms_service.db import (init_rooms_table,
                                        set_room_equipment,
                                        update_room,
                                        delete_room,
-                                       fetch_available_rooms,
-                                       fetch_bookings_for_room
-
+                                       fetch_bookings_for_room,
+                                       update_room_availability,
+                                       set_unset_out_of_service
                                        )
-
+from common.RBAC import (
+    require_auth,
+    is_human_user,
+    is_admin,
+    is_admin_or_facility,
+    read_only,
+    is_moderator,
+    is_facility
+)
 
 
 app = Flask(__name__)
@@ -54,6 +63,13 @@ def get_room(room_id):
     Fetch a single room by its ID.
     Returns the room details if found.
     """
+    payload, error = require_auth()
+    if error:
+        return error
+    
+    if not is_human_user(payload):
+        return jsonify({"error": "Unauthorized. Human user role required."}), 403
+    
     room = fetch_room(room_id)
     if not room:
         return jsonify({"error": "Room not found mnake sure the id is valid."}), 404
@@ -67,6 +83,13 @@ def get_room(room_id):
 # ─────────────────────────────────────────────
 @app.route("/rooms", methods=["POST"])
 def add_room():
+    payload, error = require_auth()
+    if error:
+        return error
+    
+    if not is_admin_or_facility(payload):
+        return jsonify({"error": "Unauthorized. Admin or Facility Manager role required."}), 403
+
     data = request.get_json() or {}
     name = (data.get("name") or "").strip()
     capacity = data.get("capacity")
@@ -114,6 +137,13 @@ def update_room_details(current_name):
     location = data.get("location")
     equipments = data.get("equipment")
 
+    payload, error = require_auth()
+    if error:
+        return error
+    
+    if not is_admin_or_facility(payload):
+        return jsonify({"error": "Unauthorized. Admin or Facility Manager role required."}), 403
+
     if new_name is not None:
         new_name = new_name.strip()
         if not new_name:
@@ -157,6 +187,12 @@ def delete_room_endpoint(room_id: int):
     """
     Delete a room and its equipment associations.
     """
+    payload, error = require_auth()
+    if error:
+        return error
+    
+    if not is_admin_or_facility(payload):
+        return jsonify({"error": "Unauthorized. Admin or Facility Manager role required."}), 403
     deleted = delete_room(room_id)
     if not deleted:
         return jsonify({"error": "Room not found."}), 404
@@ -170,6 +206,14 @@ def get_room_status(room_id: int):
     """
     Returns all bookings for the room and computes available time intervals for the day.
     """
+
+    payload, error = require_auth()
+    if error:
+        return error
+    
+    if not read_only(payload):
+        return jsonify({"error": "Unauthorized. Auditor or Regular role required."}), 403  
+    
     # Verify room exists
     room = fetch_room(room_id)
     if not room:
@@ -178,31 +222,6 @@ def get_room_status(room_id: int):
     # Fetch all bookings for this room
     bookings = fetch_bookings_for_room(room_id) or []
 
-    def parse_dt(value):
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, str):
-            try:
-                return datetime.fromisoformat(value)
-            except Exception:
-                return None
-        return None
-
-    def booking_to_dict(r):
-        start = parse_dt(r.get("start_time"))
-        end = parse_dt(r.get("end_time"))
-        created = parse_dt(r.get("created_at"))
-        return {
-            "booking_id": r.get("booking_id"),
-            "user_id": r.get("user_id"),
-            "room_id": r.get("room_id"),
-            "start_time": start.isoformat() if start else None,
-            "end_time": end.isoformat() if end else None,
-            "created_at": created.isoformat() if created else None,
-        }
-
     # Filter bookings for the current day
     today = datetime.now().date()
     start_of_day = datetime.combine(today, datetime.min.time())  # 00:00
@@ -210,10 +229,10 @@ def get_room_status(room_id: int):
 
     booked_ranges = []
     for b in bookings:
-        start = parse_dt(b.get("start_time"))
-        end = parse_dt(b.get("end_time"))
-        if start and end and start.date() == today and end.date() == today:
-            booked_ranges.append((start, end))
+        booking = Booking.from_dict(b)
+        if booking.start_time and booking.end_time and booking.start_time.date() == today and booking.end_time.date() == today:
+            booked_ranges.append((booking.start_time, booking.end_time))
+
 
     # Sort by start time
     booked_ranges.sort()
@@ -243,8 +262,64 @@ def get_room_status(room_id: int):
         "room_id": room_id,
         "room_name": room.get("room_name"),
         "room_available": len(availability_intervals) > 0,
-        "bookings": [booking_to_dict(r) for r in bookings if parse_dt(r.get("start_time")).date() == today],
+        "bookings": [Booking.from_dict(r).to_dict() for r in bookings if Booking.from_dict(r).start_time.date() == today],
         "availability_intervals": availability_intervals
+    }), 200
+
+# ─────────────────────────────────────────────
+# 7. TOGGLE ROOM AVAILABILITY
+# ─────────────────────────────────────────────
+@app.route("/rooms/<int:room_id>/toggle_availability", methods=["PATCH"])
+def toggle_room_availability(room_id):
+    """
+    Toggle the availability of a room.
+    """
+    payload, error = require_auth()
+    if error:
+        return error
+
+    if not is_admin(payload):
+        return jsonify({"error": "Unauthorized. Admin or Facility Manager role required."}), 403
+
+    # Fetch the room
+    room = fetch_room(room_id)
+    if not room:
+        return jsonify({"error": "Room not found."}), 404
+
+    # Toggle availability
+    new_availability = not room["is_available"]
+    update_room_availability(room_id, new_availability)
+
+    return jsonify({
+        "message": f"Room {room_id} availability toggled.",
+        "room_id": room_id,
+        "is_available": new_availability
+    }), 200
+
+# ─────────────────────────────────────────────
+# 8. SET/UNSET ROOM OUT OF SERVICE
+# ─────────────────────────────────────────────
+@app.route("/rooms/out_of_service/<int:room_id>", methods=["POST"])
+def set_unset_out_of_service_endpoint(room_id):
+    payload, error = require_auth()
+    if error:
+        return error    
+    if not is_facility(payload):
+        return jsonify({"error": "Unauthorized. Facility role required."}), 403
+
+    data = request.get_json() or {}
+    is_out_of_service = data.get("is_out_of_service")
+    if is_out_of_service is None:
+        return jsonify({"error": "is_out_of_service field is required."}), 400
+
+    updated_room = set_unset_out_of_service(room_id, is_out_of_service)
+    if not updated_room:
+        return jsonify({"error": "Room not found."}), 404
+
+    status = "out of service" if is_out_of_service else "in service"
+    return jsonify({
+        "message": f"Room {room_id} has been marked as {status}.",
+        "room": updated_room
     }), 200
 
 # ─────────────────────────────────────────────

@@ -27,3 +27,25 @@ class Booking:
             "end_time": self.end_time.isoformat() if self.end_time else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+
+    @staticmethod
+    def from_dict(data: dict) -> "Booking":
+        """
+        Create a Booking object from a dictionary.
+        """
+        def parse_dt(value):
+            if isinstance(value, str):
+                try:
+                    return datetime.fromisoformat(value)
+                except ValueError:
+                    return None
+            return value
+
+        return Booking(
+            id=data.get("booking_id"),
+            user_id=data["user_id"],
+            room_id=data["room_id"],
+            start_time=parse_dt(data["start_time"]),
+            end_time=parse_dt(data["end_time"]),
+            created_at=parse_dt(data["created_at"]),
+        )

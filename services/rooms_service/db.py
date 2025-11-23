@@ -20,7 +20,8 @@ def init_rooms_table():
         room_id SERIAL PRIMARY KEY,
         room_name TEXT NOT NULL UNIQUE,
         capacity INT NOT NULL CHECK (capacity > 0),
-        location TEXT
+        location TEXT,
+        is_available BOOLEAN DEFAULT TRUE
     );
     """
 
@@ -63,6 +64,7 @@ def init_room_equipment_table():
         room_id INT NOT NULL,
         equipment_id INT NOT NULL,
         quantity INT NOT NULL CHECK (quantity > 0),
+        is_out_of_service BOOLEAN DEFAULT FALSE,
         PRIMARY KEY (room_id, equipment_id),
         FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE,
         FOREIGN KEY (equipment_id) REFERENCES equipment(equip_id) ON DELETE CASCADE
@@ -320,5 +322,43 @@ def fetch_bookings_for_room(room_id):
                     (room_id,)
                 )
                 return cur.fetchall()
+    finally:
+        conn.close()
+
+def update_room_availability(room_id, is_available):
+    """
+    Update the availability of a room.
+    """
+    update_sql = """
+    UPDATE rooms
+    SET is_available = %s
+    WHERE room_id = %s
+    RETURNING room_id, is_available;
+    """
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(update_sql, (is_available, room_id))
+                return cur.fetchone()
+    finally:
+        conn.close()
+
+def set_unset_out_of_service(room_id, is_out_of_service):
+    """
+    Mark or unmark a room as out of service.
+    """
+    update_sql = """
+    UPDATE rooms
+    SET is_out_of_service = %s
+    WHERE room_id = %s
+    RETURNING room_id, room_name, capacity, location, is_out_of_service;
+    """
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(update_sql, (is_out_of_service, room_id))
+                return cur.fetchone()
     finally:
         conn.close()

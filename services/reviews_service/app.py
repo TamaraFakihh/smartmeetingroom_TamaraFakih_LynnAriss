@@ -6,13 +6,22 @@ from services.reviews_service.db import (
     update_review,
     delete_review,
     fetch_review_by_room_id,
-    report_review,
     init_reports_table,
     report_review,
-
+    flag_unflag_review,
+    fetch_all_reports,
+    hide_review,
 )
 from services.reviews_service.models import Review
-from services.users_service.app import require_auth
+from common.RBAC import (
+    require_auth,
+    is_regular,
+    is_moderator,
+    is_admin,
+    read_only,
+
+)
+
 app = Flask(__name__)
 
 # Initialize DB tables once at startup
@@ -38,7 +47,9 @@ def submit_review():
     payload, error = require_auth()
     if error:
         return error
-
+    if not is_regular(payload):
+        return jsonify({"error": "Unauthorized. Regular user role required."}), 403
+    
     user_id = int(payload["sub"])
 
     data = request.get_json() or {}
@@ -78,7 +89,9 @@ def update_review_details(review_id):
     payload, error = require_auth()
     if error:
         return error
-
+    if not is_regular(payload):
+        return jsonify({"error": "Unauthorized. Regular user role required."}), 403
+    
     user_id = int(payload["sub"])
 
     # Fetch existing review to verify ownership
@@ -116,15 +129,17 @@ def delete_review_endpoint(review_id):
     payload, error = require_auth()
     if error:
         return error
-
+    if (not is_regular(payload) and existing_review_data["user_id"] != user_id):
+        return jsonify({"error": "Unauthorized. You  can only delete your own reviews."}), 403
+    if not is_admin(payload) or is_moderator(payload):
+        return jsonify({"error": "Unauthorized to delete this review. Only admins or moderators can delete reviews."}), 403
+    
     user_id = int(payload["sub"])
 
     # Fetch existing review to verify ownership
     existing_review_data = fetch_review_by_id(review_id)
     if not existing_review_data:
         return jsonify({"error": "Review not found."}), 404
-    if existing_review_data["user_id"] != user_id:
-        return jsonify({"error": "Unauthorized to delete this review."}), 403
 
     # Delete review
     delete_review(review_id)
@@ -139,8 +154,13 @@ def reviews_by_room_id(room_id):
     """
     Fetch all reviews for a specific meeting room.
     """
+    
     reviews_data = fetch_review_by_room_id(room_id)
-
+    payload, error = require_auth()
+    if error:
+        return error
+    if not read_only(payload) and not is_admin(payload) :
+        return jsonify({"error": "Unauthorized. Read-only roles required."}), 403
     # Convert reviews to a list of dictionaries
     reviews = [Review.from_dict(review).to_dict() for review in reviews_data]
 
@@ -180,6 +200,103 @@ def report_review_endpoint(review_id):
         "message": f"Review {review_id} has been reported.",
         "report": report_data
     }), 201
+
+# ─────────────────────────────────────────────
+# 6. FLAG REVIEW 
+# ─────────────────────────────────────────────
+@app.route("/reviews/flag/<int:review_id>", methods=["POST"])
+def flag_review(review_id):
+    payload, error = require_auth()
+    if error:
+        return error    
+    if not (is_admin(payload) or is_moderator(payload)):
+        return jsonify({"error": "Unauthorized. Admin or Moderator role required."}), 403
+        # Fetch the review to ensure it exists
+    review = fetch_review_by_id(review_id)
+    if not review:
+        return jsonify({"error": "Review not found."}), 404
+    
+    updated_flag= flag_unflag_review(review_id, True)
+    return jsonify({
+        "message": f"Review {review_id} has been flagged as inappropriate.",
+        "review": updated_flag
+    }), 200
+
+# ─────────────────────────────────────────────
+# 7. UNFLAG REVIEW 
+# ─────────────────────────────────────────────
+@app.route("/reviews/unflag/<int:review_id>", methods=["POST"])
+def unflag_review(review_id):
+    payload, error = require_auth()
+    if error:
+        return error    
+    if not (is_admin(payload) or is_moderator(payload)):
+        return jsonify({"error": "Unauthorized. Admin or Moderator role required."}), 403
+        # Fetch the review to ensure it exists
+    review = fetch_review_by_id(review_id)
+    if not review:
+        return jsonify({"error": "Review not found."}), 404
+    
+    updated_flag= flag_unflag_review(review_id, False)
+    return jsonify({
+        "message": f"Review {review_id} has been unflagged.",
+        "review": updated_flag
+    }), 200
+
+# ─────────────────────────────────────────────
+# 8. GET ALL REPORTS 
+# ─────────────────────────────────────────────
+@app.route("/reviews/reports", methods=["GET"])
+def get_all_reports():
+    """
+    Fetch all reported reviews.
+    """
+    payload, error = require_auth()
+    if error:
+        return error    
+    if not is_moderator(payload):
+        return jsonify({"error": "Unauthorized. Moderator role required."}), 403
+    
+    # Fetch all reports
+    reports_data = fetch_all_reports()
+    
+    return jsonify({
+        "reports": reports_data
+    }), 200
+
+# ─────────────────────────────────────────────
+# 9. HIDE/UNHIDE A REVIEW
+# ─────────────────────────────────────────────
+@app.route("/reviews/hide/<int:review_id>", methods=["PATCH"])
+def hide_review_endpoint(review_id):
+    """
+    Hide or unhide a review. Moderator access only.
+    """
+    payload, error = require_auth()
+    if error:
+        return error
+
+    # Ensure the user is a moderator
+    if not is_moderator(payload):
+        return jsonify({"error": "Unauthorized. Moderator role required."}), 403
+
+    # Get the request data
+    data = request.get_json() or {}
+    is_hidden = data.get("is_hidden")
+
+    if is_hidden is None:
+        return jsonify({"error": "The 'is_hidden' field is required."}), 400
+
+    # Update the review's hidden status
+    updated_review = hide_review(review_id, is_hidden)
+    if not updated_review:
+        return jsonify({"error": "Review not found."}), 404
+
+    status = "hidden" if is_hidden else "visible"
+    return jsonify({
+        "message": f"Review {review_id} has been marked as {status}.",
+        "review": updated_review
+    }), 200
 
 # ─────────────────────────────────────────────
 # MAIN

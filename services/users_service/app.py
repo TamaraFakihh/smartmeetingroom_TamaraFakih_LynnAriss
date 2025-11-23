@@ -8,7 +8,10 @@ from common.security import (
     hash_password,
     verify_password,
     create_access_token,
-    decode_access_token,
+)
+from common.RBAC import (
+    require_auth,
+    is_admin,
 )
 
 app = Flask(__name__)
@@ -69,45 +72,6 @@ def validate_email(email: str) -> str | None:
         return "Email local part (before @) must be at most 64 characters."
 
     return None
-
-
-def get_current_user_payload():
-    """
-    Helper to read Authorization header, decode JWT, and return token payload.
-    Prints debug info so we can see what's going wrong.
-    """
-    auth_header = request.headers.get("Authorization", "")
-    print("AUTH HEADER RAW:", repr(auth_header))  # DEBUG
-
-    if not auth_header.startswith("Bearer "):
-        print("-> Header does NOT start with 'Bearer '")  # DEBUG
-        return None
-
-    # Strip off "Bearer "
-    token = auth_header.split(" ", 1)[1]
-    print("TOKEN (first 50 chars):", token[:50], "...")  # DEBUG
-
-    payload = decode_access_token(token)
-    print("DECODED PAYLOAD:", payload)  # DEBUG
-
-    return payload  # contains sub (user_id) and role
-
-
-def require_auth():
-    """
-    Helper to enforce authentication.
-    Returns (payload, error_response) where error_response is a Flask response or None.
-    """
-    payload = get_current_user_payload()
-    if not payload:
-        print("-> require_auth: no valid payload, returning 401")  # DEBUG
-        return None, (jsonify({"error": "Unauthorized."}), 401)
-    return payload, None
-
-
-def is_admin(payload: dict) -> bool:
-    return payload.get("role") == "admin"
-
 
 # ─────────────────────────────────────────────
 # 1. REGISTER
