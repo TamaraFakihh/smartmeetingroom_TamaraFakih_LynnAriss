@@ -13,7 +13,7 @@ from services.bookings_service.db import (
     has_conflict,
 )
 from services.bookings_service.models import Booking
-from common.security import decode_access_token
+from common.exeptions import *
 from common.RBAC import (
     require_auth,
     is_human_user,
@@ -21,8 +21,13 @@ from common.RBAC import (
     is_admin_or_facility,
     is_auditor,
 )
+from common.config import API_VERSION
 
 app = Flask(__name__)
+
+@app.errorhandler(SmartRoomExceptions)
+def handle_smart_room_exception(e):
+    return jsonify(e.to_dict()), e.status_code
 
 # Initialize DB tables once at startup
 init_bookings_table()
@@ -59,7 +64,7 @@ def ensure_future_start(start_time: datetime) -> bool:
 # 1. CREATE BOOKING
 # ─────────────────────────────────────────────
 
-@app.route("/bookings", methods=["POST"])
+@app.route(f"{API_VERSION}/bookings", methods=["POST"])
 def create_booking_endpoint():
     """
     Create a new booking for the authenticated user.
@@ -76,7 +81,7 @@ def create_booking_endpoint():
         return error
 
     if not is_human_user(payload):
-        return jsonify({"error": "Service accounts cannot create bookings."}), 403
+        raise SmartRoomExceptions(status_code=403, details="Service accounts cannot create bookings.", error="Forbidden")
 
     user_id = int(payload["sub"])
 
@@ -86,34 +91,32 @@ def create_booking_endpoint():
     end_time_str = data.get("end_time")
 
     if room_id is None or start_time_str is None or end_time_str is None:
-        return jsonify({"error": "room_id, start_time, and end_time are required."}), 400
+        raise SmartRoomExceptions(status_code=400, details="room_id, start_time, and end_time are required.", error="Bad Request")
 
     if not isinstance(room_id, int) or room_id <= 0:
-        return jsonify({"error": "room_id must be a positive integer."}), 400
+        raise SmartRoomExceptions(status_code=400, details="room_id must be a positive integer.", error="Bad Request")
 
     # Parse datetimes
     try:
         start_time = parse_iso_datetime(start_time_str)
         end_time = parse_iso_datetime(end_time_str)
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        raise SmartRoomExceptions(400, "Bad Request", str(e))
 
     # Logical check
     if end_time <= start_time:
-        return jsonify({"error": "end_time must be strictly after start_time."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "end_time must be strictly after start_time." )
 
     # Enforce future-only bookings
     if not ensure_future_start(start_time):
-        return jsonify({"error": "Bookings must start in the future."}), 400
-
+        raise SmartRoomExceptions(400, "Bad Request", "Bookings must start in the future.")
     # Check that room exists
     if not room_exists(room_id):
-        return jsonify({"error": "Room does not exist."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Room does not exist.")
 
     # Check for conflicts
     if has_conflict(room_id, start_time, end_time):
-        return jsonify({"error": "Room is already booked for the given time range."}), 409
-
+        raise SmartRoomExceptions(409, "Conflict", "Room is already booked for the given time range.")
     row = create_booking(user_id, room_id, start_time, end_time)
     booking = Booking(
         id=row["booking_id"],
@@ -131,7 +134,7 @@ def create_booking_endpoint():
 # 2. GET CURRENT USER'S BOOKINGS (HISTORY)
 # ─────────────────────────────────────────────
 
-@app.route("/bookings/me", methods=["GET"])
+@app.route(f"{API_VERSION}/bookings/me", methods=["GET"])
 def get_my_bookings():
     """
     Get all bookings for the currently authenticated user.
@@ -162,7 +165,7 @@ def get_my_bookings():
 # 3. ADMIN/FACILITY/AUDITOR: GET ALL BOOKINGS
 # ─────────────────────────────────────────────
 
-@app.route("/bookings", methods=["GET"])
+@app.route(f"{API_VERSION}/bookings", methods=["GET"])
 def get_all_bookings_endpoint():
     """
     Get all bookings in the system.
@@ -173,7 +176,7 @@ def get_all_bookings_endpoint():
         return error
 
     if not (is_admin_or_facility(payload) or is_auditor(payload)):
-        return jsonify({"error": "Forbidden. Admin, facility manager or auditor only."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Admin, facility manager or auditor only.")
 
     rows = fetch_all_bookings()
 
@@ -196,7 +199,7 @@ def get_all_bookings_endpoint():
 # 4. UPDATE BOOKING (RESCHEDULE / CHANGE ROOM)
 # ─────────────────────────────────────────────
 
-@app.route("/bookings/<int:booking_id>", methods=["PUT"])
+@app.route(f"{API_VERSION}/bookings/<int:booking_id>", methods=["PUT"])
 def update_booking_endpoint(booking_id: int):
     """
     Update an existing booking (room and/or time).
@@ -218,7 +221,7 @@ def update_booking_endpoint(booking_id: int):
 
     row = fetch_booking(booking_id)
     if not row:
-        return jsonify({"error": "Booking not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Booking not found.")
 
     # Permission check:
     # - admin can update any booking
@@ -233,7 +236,7 @@ def update_booking_endpoint(booking_id: int):
 
     if new_room_id is not None:
         if not isinstance(new_room_id, int) or new_room_id <= 0:
-            return jsonify({"error": "room_id must be a positive integer."}), 400
+            raise SmartRoomExceptions(400, "Bad Request", "room_id must be a positive integer.")
 
     # Parse datetimes if provided
     new_start_time = None
@@ -243,35 +246,34 @@ def update_booking_endpoint(booking_id: int):
         try:
             new_start_time = parse_iso_datetime(start_time_str)
         except ValueError as e:
-            return jsonify({"error": str(e)}), 400
+            raise SmartRoomExceptions(400, "Bad Request", str(e))
 
     if end_time_str is not None:
         try:
             new_end_time = parse_iso_datetime(end_time_str)
         except ValueError as e:
-            return jsonify({"error": str(e)}), 400
+            raise SmartRoomExceptions(400, "Bad Request", str(e))
 
     # Determine final times for conflict/future checks
     final_start = new_start_time or row["start_time"]
     final_end = new_end_time or row["end_time"]
 
     if final_end <= final_start:
-        return jsonify({"error": "end_time must be strictly after start_time."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "end_time must be strictly after start_time.")
 
     if not ensure_future_start(final_start):
-        return jsonify({"error": "Updated booking must start in the future."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "Updated booking must start in the future.")
 
     # Determine final room_id
     final_room_id = new_room_id if new_room_id is not None else row["room_id"]
 
     # Ensure room exists if changed
     if new_room_id is not None and not room_exists(final_room_id):
-        return jsonify({"error": "Room does not exist."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Room does not exist.")
 
     # Check conflicts (excluding this booking itself)
     if has_conflict(final_room_id, final_start, final_end, exclude_booking_id=booking_id):
-        return jsonify({"error": "Room is already booked for the given time range."}), 409
-
+        raise SmartRoomExceptions(409, "Conflict", "Room is already booked for the given time range.")
     # Perform update
     updated_row = update_booking_times(
         booking_id,
@@ -280,7 +282,7 @@ def update_booking_endpoint(booking_id: int):
         end_time=new_end_time,
     )
     if not updated_row:
-        return jsonify({"error": "Booking not found or nothing to update."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Booking not found or nothing to update.")
 
     booking = Booking(
         id=updated_row["booking_id"],
@@ -298,7 +300,7 @@ def update_booking_endpoint(booking_id: int):
 # 5. DELETE (CANCEL) BOOKING
 # ─────────────────────────────────────────────
 
-@app.route("/bookings/<int:booking_id>", methods=["DELETE"])
+@app.route(f"{API_VERSION}/bookings/<int:booking_id>", methods=["DELETE"])
 def delete_booking_endpoint(booking_id: int):
     """
     Delete (cancel) a booking.
@@ -313,18 +315,17 @@ def delete_booking_endpoint(booking_id: int):
 
     row = fetch_booking(booking_id)
     if not row:
-        return jsonify({"error": "Booking not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Booking not found.")
 
     # Permission check:
     # - admin can cancel any booking
     # - non-admin can only cancel their own booking
     if not is_admin(payload) and row["user_id"] != current_user_id:
-        return jsonify({"error": "Forbidden."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "You do not have permission to cancel this booking.")
 
     deleted = delete_booking(booking_id)
     if deleted == 0:
-        return jsonify({"error": "Booking not found."}), 404
-
+        raise SmartRoomExceptions(404, "Not Found", "Booking not found.")
     return jsonify({"message": "Booking cancelled successfully."}), 200
 
 
@@ -332,7 +333,7 @@ def delete_booking_endpoint(booking_id: int):
 # 6. CHECK AVAILABILITY FOR A ROOM
 # ─────────────────────────────────────────────
 
-@app.route("/bookings/check", methods=["GET"])
+@app.route(f"{API_VERSION}/bookings/check", methods=["GET"])
 def check_room_availability():
     """
     Check if a room is available in a given time range.
@@ -348,27 +349,27 @@ def check_room_availability():
     end_time_str = request.args.get("end_time")
 
     if not room_id_str or not start_time_str or not end_time_str:
-        return jsonify({"error": "room_id, start_time, and end_time query params are required."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "room_id, start_time, and end_time query params are required.")
 
     try:
         room_id = int(room_id_str)
     except ValueError:
-        return jsonify({"error": "room_id must be an integer."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "room_id must be an integer.")
 
     try:
         start_time = parse_iso_datetime(start_time_str)
         end_time = parse_iso_datetime(end_time_str)
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        raise SmartRoomExceptions(400, "Bad Request", str(e))
 
     if end_time <= start_time:
-        return jsonify({"error": "end_time must be strictly after start_time."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "end_time must be strictly after start_time.")
 
     # For availability checks, you might allow past ranges (for analytics),
     # so we do NOT enforce future-only here.
 
     if not room_exists(room_id):
-        return jsonify({"error": "Room does not exist."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Room does not exist.")
 
     conflict = has_conflict(room_id, start_time, end_time)
     return jsonify({

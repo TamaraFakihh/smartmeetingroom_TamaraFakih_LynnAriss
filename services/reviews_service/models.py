@@ -9,7 +9,7 @@ class Review:
         self.comment = comment
         self.created_at = created_at
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         """
         Convert the Review object to a dictionary for JSON serialization.
         """
@@ -23,7 +23,7 @@ class Review:
         }
 
     @staticmethod
-    def from_dict(data: dict):
+    def from_dict(data: dict)-> "Review":
         """
         Create a Review object from a dictionary.
         Handles cases where created_at is already a datetime object or None.

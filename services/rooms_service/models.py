@@ -23,7 +23,7 @@ class Room:
         }
     
     @staticmethod
-    def room_with_equipment_dict(room_data, equipment_data):
+    def room_with_equipment_dict(room_data, equipment_data)-> "Room":
         # Create a Room object with both room and equipment data
         return Room(
             id=room_data["room_id"],

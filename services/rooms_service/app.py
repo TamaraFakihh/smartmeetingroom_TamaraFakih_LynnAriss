@@ -26,9 +26,14 @@ from common.RBAC import (
     is_moderator,
     is_facility
 )
-
+from common.exeptions import *
+from common.config import API_VERSION
 
 app = Flask(__name__)
+
+@app.errorhandler(SmartRoomExceptions)
+def handle_smart_room_exception(e):
+    return jsonify(e.to_dict()), e.status_code
 
 # Initialize DB tables once at startup (Flask 3 has no before_first_request)
 init_rooms_table()
@@ -38,7 +43,7 @@ init_room_equipment_table()
 # ─────────────────────────────────────────────
 # 1. GET ALLL ROOMS
 # ─────────────────────────────────────────────
-@app.route("/rooms", methods=["GET"])
+@app.route(f"{API_VERSION}/rooms", methods=["GET"])
 def get_all_rooms():
     """
     Fetch all rooms from the database.
@@ -46,7 +51,7 @@ def get_all_rooms():
     """
     rooms = fetch_all_rooms()
     if not rooms:
-        return jsonify({"error": "No rooms found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "No rooms found.")
     for i in range(len(rooms)):
         equipments = fetch_equipment_for_room(rooms[i]["room_id"])
         room_obj = Room.room_with_equipment_dict(rooms[i], equipments)
@@ -57,7 +62,7 @@ def get_all_rooms():
 # ─────────────────────────────────────────────
 # 2. GET A ROOM BY ITS ID
 # ─────────────────────────────────────────────
-@app.route("/rooms/<int:room_id>", methods=["GET"])
+@app.route(f"{API_VERSION}/rooms/<int:room_id>", methods=["GET"])
 def get_room(room_id):
     """
     Fetch a single room by its ID.
@@ -65,14 +70,14 @@ def get_room(room_id):
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
     
     if not is_human_user(payload):
-        return jsonify({"error": "Unauthorized. Human user role required."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Human user role required.")
     
     room = fetch_room(room_id)
     if not room:
-        return jsonify({"error": "Room not found mnake sure the id is valid."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Room not found. Make sure the ID is valid.")
     equipments = fetch_equipment_for_room(room_id)
     room_obj = Room.room_with_equipment_dict(room, equipments)
 
@@ -81,14 +86,14 @@ def get_room(room_id):
 # ─────────────────────────────────────────────
 # 3. ADD NEW ROOM
 # ─────────────────────────────────────────────
-@app.route("/rooms", methods=["POST"])
+@app.route(f"{API_VERSION}/rooms", methods=["POST"])
 def add_room():
     payload, error = require_auth()
     if error:
-        return error
+        raise error
     
     if not is_admin_or_facility(payload):
-        return jsonify({"error": "Unauthorized. Admin or Facility Manager role required."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Admin or Facility Manager role required.")
 
     data = request.get_json() or {}
     name = (data.get("name") or "").strip()
@@ -96,18 +101,17 @@ def add_room():
     location = (data.get("location") or "").strip()
     equipment_entries = data.get("equipment") or []
     if not name:
-        return jsonify({"error": "Room name is required."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "Room name is required.")
     if not isinstance(capacity, int) or capacity <= 0:
-        return jsonify({"error": "The capacity must be a positive integer."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "The capacity must be a positive integer.")
     if not isinstance(equipment_entries, list) or not equipment_entries:
-        return jsonify({"error": "Please make sure that you have at least on equipment in the room."}), 400
-
+        raise SmartRoomExceptions(400, "Bad Request", "Please make sure that you have at least on equipment in the room.")
     cleaned_equipment = []
     for entry in equipment_entries:
         equipment_name = (entry.get("name") or "").strip()
         quantity = entry.get("quantity")
         if not equipment_name or not isinstance(quantity, int) or quantity <= 0:
-            return jsonify({"error": "Each equipment needs a name and positive quantity."}), 400
+            raise SmartRoomExceptions(400, "Bad Request", "Each equipment needs a name and positive quantity.")
         cleaned_equipment.append(
             {
                 "name": equipment_name,
@@ -117,19 +121,19 @@ def add_room():
     try:
         room_row = create_room(name, capacity, location)
     except UniqueViolation:
-        return jsonify({"error": "Room name already exists choose another."}), 409
+        raise SmartRoomExceptions(409, "Conflict", "Room name already exists choose another.")
 
     set_room_equipment(room_row["room_id"], cleaned_equipment)
 
     equipment_with_details = fetch_equipment_for_room(room_row["room_id"])
     room_obj = Room.room_with_equipment_dict(room_row, equipment_with_details)
-    return jsonify({"room": room_obj.to_dict()}), 201
+    raise SmartRoomExceptions(201, "Created", {"room": room_obj.to_dict()})
 
 # ─────────────────────────────────────────────
 # 4. UPDATE ROOM DETAILS
 # ─────────────────────────────────────────────
 
-@app.route("/rooms/update/<string:current_name>", methods=["PUT"])
+@app.route(f"{API_VERSION}/rooms/update/<string:current_name>", methods=["PUT"])
 def update_room_details(current_name):
     data = request.get_json() or {}
     new_name = data.get("name")
@@ -139,34 +143,34 @@ def update_room_details(current_name):
 
     payload, error = require_auth()
     if error:
-        return error
+        raise error
     
     if not is_admin_or_facility(payload):
-        return jsonify({"error": "Unauthorized. Admin or Facility Manager role required."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Admin or Facility Manager role required.")
 
     if new_name is not None:
         new_name = new_name.strip()
         if not new_name:
-            return jsonify({"error": "Room name cannot be empty."}), 400
+            raise SmartRoomExceptions(400, "Bad Request", "Room name cannot be empty.")
     if capacity is not None:
         if not isinstance(capacity, int) or capacity <= 0:
-            return jsonify({"error": "The capacity must be a positive integer."}), 400
+            raise SmartRoomExceptions(400, "Bad Request", "The capacity must be a positive integer.")
     if location is not None:
         location = location.strip()
 
     updated_room = update_room(current_name, new_name=new_name, capacity=capacity, location=location)
     if not updated_room:
-        return jsonify({"error": "Room not found or no fields to update."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Room not found or no fields to update.")
 
     if equipments is not None:
         if not isinstance(equipments, list):
-            return jsonify({"error": "Equipments must be provided as a list."}), 400
+            raise SmartRoomExceptions(400, "Bad Request", "Equipments must be provided as a list.")
         cleaned_equipment = []
         for e in equipments:
             equipment_name = (e.get("name") or "").strip()
             quantity = e.get("quantity")
             if not equipment_name or not isinstance(quantity, int) or quantity <= 0:
-                return jsonify({"error": "Each equipment needs a name and positive quantity."}), 400
+                raise SmartRoomExceptions(400, "Bad Request", "Each equipment needs a name and positive quantity.")
             cleaned_equipment.append(
                 {
                     "name": equipment_name,
@@ -182,26 +186,26 @@ def update_room_details(current_name):
 # ─────────────────────────────────────────────
 # 5. DELETE A ROOM
 # ─────────────────────────────────────────────
-@app.route("/rooms/<int:room_id>", methods=["DELETE"])
+@app.route(f"{API_VERSION}/rooms/<int:room_id>", methods=["DELETE"])
 def delete_room_endpoint(room_id: int):
     """
     Delete a room and its equipment associations.
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
     
     if not is_admin_or_facility(payload):
-        return jsonify({"error": "Unauthorized. Admin or Facility Manager role required."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Admin or Facility Manager role required.")
     deleted = delete_room(room_id)
     if not deleted:
-        return jsonify({"error": "Room not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Room not found.")
     return jsonify({"message": "Room deleted successfully."}), 200
 
 # ─────────────────────────────────────────────
 # 6. RETRIEVE AVAILABLE ROOMS 
 # ─────────────────────────────────────────────
-@app.route("/rooms/<int:room_id>/status", methods=["GET"])
+@app.route(f"{API_VERSION}/rooms/<int:room_id>/status", methods=["GET"])
 def get_room_status(room_id: int):
     """
     Returns all bookings for the room and computes available time intervals for the day.
@@ -209,15 +213,15 @@ def get_room_status(room_id: int):
 
     payload, error = require_auth()
     if error:
-        return error
+        raise error
     
     if not read_only(payload):
-        return jsonify({"error": "Unauthorized. Auditor or Regular role required."}), 403  
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Auditor or Regular role required.")  
     
     # Verify room exists
     room = fetch_room(room_id)
     if not room:
-        return jsonify({"error": "Room not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Room not found.")
 
     # Fetch all bookings for this room
     bookings = fetch_bookings_for_room(room_id) or []
@@ -269,22 +273,22 @@ def get_room_status(room_id: int):
 # ─────────────────────────────────────────────
 # 7. TOGGLE ROOM AVAILABILITY
 # ─────────────────────────────────────────────
-@app.route("/rooms/<int:room_id>/toggle_availability", methods=["PATCH"])
+@app.route(f"{API_VERSION}/rooms/<int:room_id>/toggle_availability", methods=["PATCH"])
 def toggle_room_availability(room_id):
     """
     Toggle the availability of a room.
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
 
     if not is_admin(payload):
-        return jsonify({"error": "Unauthorized. Admin or Facility Manager role required."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Admin or Facility Manager role required.")
 
     # Fetch the room
     room = fetch_room(room_id)
     if not room:
-        return jsonify({"error": "Room not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Room not found.")
 
     # Toggle availability
     new_availability = not room["is_available"]
@@ -299,23 +303,23 @@ def toggle_room_availability(room_id):
 # ─────────────────────────────────────────────
 # 8. SET/UNSET ROOM OUT OF SERVICE
 # ─────────────────────────────────────────────
-@app.route("/rooms/out_of_service/<int:room_id>", methods=["POST"])
+@app.route(f"{API_VERSION}/rooms/out_of_service/<int:room_id>", methods=["POST"])
 def set_unset_out_of_service_endpoint(room_id):
     payload, error = require_auth()
     if error:
-        return error    
+        raise error    
     if not is_facility(payload):
-        return jsonify({"error": "Unauthorized. Facility role required."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Facility role required.")
 
     data = request.get_json() or {}
     is_out_of_service = data.get("is_out_of_service")
     if is_out_of_service is None:
-        return jsonify({"error": "is_out_of_service field is required."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "is_out_of_service field is required.")
 
     updated_room = set_unset_out_of_service(room_id, is_out_of_service)
     if not updated_room:
-        return jsonify({"error": "Room not found."}), 404
-
+        raise SmartRoomExceptions(404, "Not Found", "Room not found.")
+    
     status = "out of service" if is_out_of_service else "in service"
     return jsonify({
         "message": f"Room {room_id} has been marked as {status}.",

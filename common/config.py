@@ -16,3 +16,5 @@ JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change_this_in_production")
 
 # Token expiry in minutes (example)
 JWT_EXP_MINUTES = int(os.getenv("JWT_EXP_MINUTES", "60"))
+
+API_VERSION = "/api/v1"

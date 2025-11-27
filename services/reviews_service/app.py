@@ -21,8 +21,14 @@ from common.RBAC import (
     read_only,
 
 )
+from common.exeptions import *
+from common.config import API_VERSION
 
 app = Flask(__name__)
+
+@app.errorhandler(SmartRoomExceptions)
+def handle_smart_room_exception(e):
+    return jsonify(e.to_dict()), e.status_code
 
 # Initialize DB tables once at startup
 init_reviews_table()
@@ -32,7 +38,7 @@ init_reports_table()
 # 1. SUBMIT A REVIEW
 # ─────────────────────────────────────────────
 
-@app.route("/reviews", methods=["POST"])
+@app.route(f"{API_VERSION}/reviews", methods=["POST"])
 def submit_review():
     """
     Submit a review for a meeting room.
@@ -46,9 +52,9 @@ def submit_review():
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
     if not is_regular(payload):
-        return jsonify({"error": "Unauthorized. Regular user role required."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Regular user role required.")
     
     user_id = int(payload["sub"])
 
@@ -59,9 +65,9 @@ def submit_review():
 
     # Validate inputs
     if not room_id or not rating:
-        return jsonify({"error": "room_id and rating are required."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "room_id and rating are required.")
     if not (1 <= rating <= 5):
-        return jsonify({"error": "Rating must be between 1 and 5."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "Rating must be between 1 and 5.")
 
     # Create review
     review_data = create_review(room_id, user_id, rating, comment)
@@ -75,7 +81,7 @@ def submit_review():
 # ─────────────────────────────────────────────
 # 2. UPDATE A REVIEW
 # ─────────────────────────────────────────────
-@app.route("/reviews/update/<int:review_id>", methods=["PUT"])
+@app.route(f"{API_VERSION}/reviews/update/<int:review_id>", methods=["PUT"])
 def update_review_details(review_id):
     """
     Update an existing review.
@@ -88,18 +94,18 @@ def update_review_details(review_id):
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
     if not is_regular(payload):
-        return jsonify({"error": "Unauthorized. Regular user role required."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Regular user role required.")
     
     user_id = int(payload["sub"])
 
     # Fetch existing review to verify ownership
     existing_review_data = fetch_review_by_id(review_id)
     if not existing_review_data:
-        return jsonify({"error": "Review not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Review not found.")
     if existing_review_data["user_id"] != user_id:
-        return jsonify({"error": "Unauthorized to update this review."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized to update this review.")
 
     data = request.get_json() or {}
     rating = data.get("rating")
@@ -107,7 +113,7 @@ def update_review_details(review_id):
 
     # Validate inputs
     if rating is not None and not (1 <= rating <= 5):
-        return jsonify({"error": "Rating must be between 1 and 5."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "Rating must be between 1 and 5.")
 
     # Update review
     updated_review_data = update_review(review_id, rating, comment)
@@ -121,25 +127,25 @@ def update_review_details(review_id):
 # ─────────────────────────────────────────────
 # 3.DELETE A REVIEW
 # ─────────────────────────────────────────────
-@app.route("/reviews/<int:review_id>", methods=["DELETE"])
+@app.route(f"{API_VERSION}/reviews/<int:review_id>", methods=["DELETE"])
 def delete_review_endpoint(review_id):
     """
     Delete an existing review.
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
     if (not is_regular(payload) and existing_review_data["user_id"] != user_id):
-        return jsonify({"error": "Unauthorized. You  can only delete your own reviews."}), 403
-    if not is_admin(payload) or is_moderator(payload):
-        return jsonify({"error": "Unauthorized to delete this review. Only admins or moderators can delete reviews."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. You can only delete your own reviews.")
+    if not (is_admin(payload) or is_moderator(payload)):
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized to delete this review. Only admins or moderators can delete reviews.")
     
     user_id = int(payload["sub"])
 
     # Fetch existing review to verify ownership
     existing_review_data = fetch_review_by_id(review_id)
     if not existing_review_data:
-        return jsonify({"error": "Review not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Review not found.")
 
     # Delete review
     delete_review(review_id)
@@ -149,7 +155,7 @@ def delete_review_endpoint(review_id):
 # ─────────────────────────────────────────────
 # 4. GET REVIEWS FOR A ROOM
 # ─────────────────────────────────────────────
-@app.route("/reviews/<int:room_id>", methods=["GET"])
+@app.route(f"{API_VERSION}/reviews/<int:room_id>", methods=["GET"])
 def reviews_by_room_id(room_id):
     """
     Fetch all reviews for a specific meeting room.
@@ -158,9 +164,9 @@ def reviews_by_room_id(room_id):
     reviews_data = fetch_review_by_room_id(room_id)
     payload, error = require_auth()
     if error:
-        return error
+        raise error
     if not read_only(payload) and not is_admin(payload) :
-        return jsonify({"error": "Unauthorized. Read-only roles required."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Read-only roles required.")
     # Convert reviews to a list of dictionaries
     reviews = [Review.from_dict(review).to_dict() for review in reviews_data]
 
@@ -172,26 +178,26 @@ def reviews_by_room_id(room_id):
 # ─────────────────────────────────────────────
 # 5. REPORT AN INAPPROPRIATE REVIEW
 # ─────────────────────────────────────────────
-@app.route("/reviews/report/<int:review_id>", methods=["POST"])
+@app.route(f"{API_VERSION}/reviews/report/<int:review_id>", methods=["POST"])
 def report_review_endpoint(review_id):
     """
     Report an inappropriate review.
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
 
     reporter_user_id = int(payload["sub"])
     data = request.get_json() or {}
     reason = data.get("reason", "").strip()
 
     if not reason:
-        return jsonify({"error": "Reason for reporting is required."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "Reason for reporting is required.")
 
     # Fetch the review directly
     existing_review = fetch_review_by_id(review_id)
     if not existing_review:
-        return jsonify({"error": "The review does not exist."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "The review does not exist.")
 
     # Insert the report
     report_data = report_review(review_id, reporter_user_id, reason)
@@ -204,17 +210,17 @@ def report_review_endpoint(review_id):
 # ─────────────────────────────────────────────
 # 6. FLAG REVIEW 
 # ─────────────────────────────────────────────
-@app.route("/reviews/flag/<int:review_id>", methods=["POST"])
+@app.route(f"{API_VERSION}/reviews/flag/<int:review_id>", methods=["POST"])
 def flag_review(review_id):
     payload, error = require_auth()
     if error:
-        return error    
+        raise error    
     if not (is_admin(payload) or is_moderator(payload)):
-        return jsonify({"error": "Unauthorized. Admin or Moderator role required."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Admin or Moderator role required.")
         # Fetch the review to ensure it exists
     review = fetch_review_by_id(review_id)
     if not review:
-        return jsonify({"error": "Review not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Review not found.")
     
     updated_flag= flag_unflag_review(review_id, True)
     return jsonify({
@@ -225,17 +231,17 @@ def flag_review(review_id):
 # ─────────────────────────────────────────────
 # 7. UNFLAG REVIEW 
 # ─────────────────────────────────────────────
-@app.route("/reviews/unflag/<int:review_id>", methods=["POST"])
+@app.route(f"{API_VERSION}/reviews/unflag/<int:review_id>", methods=["POST"])
 def unflag_review(review_id):
     payload, error = require_auth()
     if error:
-        return error    
+        raise error    
     if not (is_admin(payload) or is_moderator(payload)):
-        return jsonify({"error": "Unauthorized. Admin or Moderator role required."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Admin or Moderator role required.")
         # Fetch the review to ensure it exists
     review = fetch_review_by_id(review_id)
     if not review:
-        return jsonify({"error": "Review not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Review not found.")
     
     updated_flag= flag_unflag_review(review_id, False)
     return jsonify({
@@ -246,16 +252,16 @@ def unflag_review(review_id):
 # ─────────────────────────────────────────────
 # 8. GET ALL REPORTS 
 # ─────────────────────────────────────────────
-@app.route("/reviews/reports", methods=["GET"])
+@app.route(f"{API_VERSION}/reviews/reports", methods=["GET"])
 def get_all_reports():
     """
     Fetch all reported reviews.
     """
     payload, error = require_auth()
     if error:
-        return error    
+        raise error    
     if not is_moderator(payload):
-        return jsonify({"error": "Unauthorized. Moderator role required."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Moderator role required.")
     
     # Fetch all reports
     reports_data = fetch_all_reports()
@@ -267,30 +273,30 @@ def get_all_reports():
 # ─────────────────────────────────────────────
 # 9. HIDE/UNHIDE A REVIEW
 # ─────────────────────────────────────────────
-@app.route("/reviews/hide/<int:review_id>", methods=["PATCH"])
+@app.route(f"{API_VERSION}/reviews/hide/<int:review_id>", methods=["PATCH"])
 def hide_review_endpoint(review_id):
     """
     Hide or unhide a review. Moderator access only.
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
 
     # Ensure the user is a moderator
     if not is_moderator(payload):
-        return jsonify({"error": "Unauthorized. Moderator role required."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Moderator role required.")
 
     # Get the request data
     data = request.get_json() or {}
     is_hidden = data.get("is_hidden")
 
     if is_hidden is None:
-        return jsonify({"error": "The 'is_hidden' field is required."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "The 'is_hidden' field is required.")
 
     # Update the review's hidden status
     updated_review = hide_review(review_id, is_hidden)
     if not updated_review:
-        return jsonify({"error": "Review not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "Review not found.")
 
     status = "hidden" if is_hidden else "visible"
     return jsonify({

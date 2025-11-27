@@ -1,5 +1,6 @@
 from common.security import decode_access_token
-from flask import request, jsonify
+from flask import request
+from common.exeptions import SmartRoomExceptions
 
 # ─────────────────────────────────────────────
 # Auth & RBAC helpers (mirroring users_service style)
@@ -25,7 +26,7 @@ def require_auth():
     """
     payload = get_current_user_payload()
     if not payload:
-        return None, (jsonify({"error": "Unauthorized. Make sure your token is valid and not expired."}), 401)
+        raise SmartRoomExceptions(401, "Unauthorized", "Make sure your token is valid and not expired.")
     return payload, None
 
 

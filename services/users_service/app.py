@@ -13,8 +13,13 @@ from common.RBAC import (
     require_auth,
     is_admin,
 )
-
+from common.exeptions import *
+from common.config import API_VERSION
 app = Flask(__name__)
+
+@app.errorhandler(SmartRoomExceptions)
+def handle_smart_room_exception(e):
+    return jsonify(e.to_dict()), e.status_code
 
 # Initialize DB tables once at startup (Flask 3 has no before_first_request)
 init_users_table()
@@ -37,7 +42,7 @@ ALLOWED_ROLES = {
 
 def validate_username(username: str) -> str | None:
     """
-    Return error message if invalid, else None.
+    raise error message if invalid, else None.
     """
     if not (3 <= len(username) <= 15):
         return "Username must be between 3 and 15 characters."
@@ -59,7 +64,7 @@ def validate_username(username: str) -> str | None:
 
 def validate_email(email: str) -> str | None:
     """
-    Return error message if invalid, else None.
+    raise error message if invalid, else None.
     """
     if not EMAIL_PATTERN.match(email):
         return "Invalid email format."
@@ -77,7 +82,7 @@ def validate_email(email: str) -> str | None:
 # 1. REGISTER
 # ─────────────────────────────────────────────
 
-@app.route("/users/register", methods=["POST"])
+@app.route(f"{API_VERSION}/users/register", methods=["POST"])
 def register_user():
     """
     Register a new user.
@@ -97,7 +102,7 @@ def register_user():
     required_fields = ["first_name", "last_name", "username", "email", "password"]
     missing = [f for f in required_fields if not data.get(f)]
     if missing:
-        return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
+        raise SmartRoomExceptions(400, "Bad Request", f"Missing fields: {', '.join(missing)}")
 
     first_name = data["first_name"].strip()
     last_name = data["last_name"].strip()
@@ -109,24 +114,24 @@ def register_user():
     # Validate username
     username_error = validate_username(username)
     if username_error:
-        return jsonify({"error": username_error}), 400
+        raise SmartRoomExceptions(400, "Bad Request", username_error)
 
     # Validate email
     email_error = validate_email(email)
     if email_error:
-        return jsonify({"error": email_error}), 400
+        raise SmartRoomExceptions(400, "Bad Request", email_error)
 
     # Validate role (just in case, even though DB also checks)
     if role not in ALLOWED_ROLES:
-        return jsonify({"error": "Invalid role value."}), 400
-
+        raise SmartRoomExceptions(400, "Bad Request", "Invalid role value.")
+    
     # Check if username or email already exists
     existing = fetch_one(
         "SELECT 1 FROM users WHERE username = %s OR email = %s",
         (username, email),
     )
     if existing:
-        return jsonify({"error": "Username or email already in use."}), 409
+        raise SmartRoomExceptions(409, "Conflict", "Username or email already in use.")
 
     password_hash = hash_password(password)
 
@@ -158,7 +163,7 @@ def register_user():
 # 2. LOGIN
 # ─────────────────────────────────────────────
 
-@app.route("/auth/login", methods=["POST"])
+@app.route(f"{API_VERSION}/auth/login", methods=["POST"])
 def login():
     """
     Log in a user and return an access token.
@@ -174,14 +179,14 @@ def login():
     password = data.get("password", "")
 
     if not username or not password:
-        return jsonify({"error": "Username and password are required."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "Username and password are required.")
 
     row = fetch_one("SELECT * FROM users WHERE username = %s", (username,))
     if not row:
-        return jsonify({"error": "Invalid credentials."}), 401
-
+        raise SmartRoomExceptions(401, "Unauthorized", "Invalid credentials.")
+    
     if not verify_password(password, row["password_hash"]):
-        return jsonify({"error": "Invalid credentials."}), 401
+        raise SmartRoomExceptions(401, "Unauthorized", "Invalid credentials.")
 
     token = create_access_token(row["id"], row["role"])
 
@@ -205,7 +210,7 @@ def login():
 # 3. GET CURRENT USER
 # ─────────────────────────────────────────────
 
-@app.route("/users/me", methods=["GET"])
+@app.route(f"{API_VERSION}/users/me", methods=["GET"])
 def get_my_profile():
     """
     Return the profile of the currently authenticated user.
@@ -214,7 +219,7 @@ def get_my_profile():
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
 
     user_id = int(payload["sub"])
 
@@ -223,7 +228,7 @@ def get_my_profile():
         (user_id,),
     )
     if not row:
-        return jsonify({"error": "User not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "User not found.")
 
     user = User(
         id=row["id"],
@@ -242,7 +247,7 @@ def get_my_profile():
 # 4. UPDATE OWN PROFILE
 # ─────────────────────────────────────────────
 
-@app.route("/users/me", methods=["PUT"])
+@app.route(f"{API_VERSION}/users/me", methods=["PUT"])
 def update_my_profile():
     """
     Update the profile of the currently authenticated user.
@@ -252,7 +257,7 @@ def update_my_profile():
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
 
     user_id = int(payload["sub"])
     data = request.get_json() or {}
@@ -275,7 +280,7 @@ def update_my_profile():
         new_username = data["username"].strip().lower()
         username_error = validate_username(new_username)
         if username_error:
-            return jsonify({"error": username_error}), 400
+            raise SmartRoomExceptions(400, "Bad Request", username_error)
 
         # Check if taken by someone else
         existing = fetch_one(
@@ -283,7 +288,7 @@ def update_my_profile():
             (new_username, user_id),
         )
         if existing:
-            return jsonify({"error": "Username already in use."}), 409
+            raise SmartRoomExceptions(409, "Conflict", "Username already in use.")
 
         fields_to_update.append("username = %s")
         params.append(new_username)
@@ -293,14 +298,14 @@ def update_my_profile():
         new_email = data["email"].strip().lower()
         email_error = validate_email(new_email)
         if email_error:
-            return jsonify({"error": email_error}), 400
+            raise SmartRoomExceptions(400, "Bad Request", email_error)
 
         existing = fetch_one(
             "SELECT id FROM users WHERE email = %s AND id <> %s",
             (new_email, user_id),
         )
         if existing:
-            return jsonify({"error": "Email already in use."}), 409
+            raise SmartRoomExceptions(409, "Conflict", "Email already in use.")
 
         fields_to_update.append("email = %s")
         params.append(new_email)
@@ -312,7 +317,7 @@ def update_my_profile():
         params.append(new_password_hash)
 
     if not fields_to_update:
-        return jsonify({"error": "No valid fields provided to update."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "No valid fields provided to update.")
 
     # Build dynamic UPDATE
     set_clause = ", ".join(fields_to_update)
@@ -327,7 +332,7 @@ def update_my_profile():
 
     row = fetch_one(update_sql, tuple(params))
     if not row:
-        return jsonify({"error": "User not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "User not found.")
 
     user = User(
         id=row["id"],
@@ -346,7 +351,7 @@ def update_my_profile():
 # 5. DELETE OWN ACCOUNT
 # ─────────────────────────────────────────────
 
-@app.route("/users/me", methods=["DELETE"])
+@app.route(f"{API_VERSION}/users/me", methods=["DELETE"])
 def delete_my_account():
     """
     Delete the currently authenticated user's account.
@@ -355,13 +360,13 @@ def delete_my_account():
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
 
     user_id = int(payload["sub"])
 
     deleted = execute("DELETE FROM users WHERE id = %s", (user_id,))
     if deleted == 0:
-        return jsonify({"error": "User not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "User not found.")
 
     return jsonify({"message": "Account deleted successfully."}), 200
 
@@ -370,7 +375,7 @@ def delete_my_account():
 # 6. ADMIN: GET ALL USERS
 # ─────────────────────────────────────────────
 
-@app.route("/users", methods=["GET"])
+@app.route(f"{API_VERSION}/users", methods=["GET"])
 def get_all_users():
     """
     Return all users.
@@ -378,10 +383,10 @@ def get_all_users():
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
 
     if not is_admin(payload):
-        return jsonify({"error": "Forbidden. Admins only."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Admins only.")
 
     rows = fetch_all(
         "SELECT id, first_name, last_name, username, email, role FROM users ORDER BY id"
@@ -407,7 +412,7 @@ def get_all_users():
 # 7. GET SPECIFIC USER BY USERNAME
 # ─────────────────────────────────────────────
 
-@app.route("/users/<string:username>", methods=["GET"])
+@app.route(f"{API_VERSION}/users/<string:username>", methods=["GET"])
 def get_user_by_username(username: str):
     """
     Get details of a specific user by username.
@@ -417,7 +422,7 @@ def get_user_by_username(username: str):
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
 
     user_id = int(payload["sub"])
     target_username = username.strip().lower()
@@ -427,12 +432,12 @@ def get_user_by_username(username: str):
         (target_username,),
     )
     if not row:
-        return jsonify({"error": "User not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "User not found.")
 
     # If not admin, ensure they are requesting their own profile
     if not is_admin(payload) and row["id"] != user_id:
-        return jsonify({"error": "Forbidden."}), 403
-
+        raise SmartRoomExceptions(403, "Forbidden", "Forbidden.")
+    
     user = User(
         id=row["id"],
         first_name=row["first_name"],
@@ -450,7 +455,7 @@ def get_user_by_username(username: str):
 # 8. ADMIN: UPDATE USER (INCL. ROLE)
 # ─────────────────────────────────────────────
 
-@app.route("/users/<int:user_id>", methods=["PUT"])
+@app.route(f"{API_VERSION}/users/<int:user_id>", methods=["PUT"])
 def admin_update_user(user_id: int):
     """
     Admin-only endpoint to update another user's profile and role.
@@ -459,10 +464,10 @@ def admin_update_user(user_id: int):
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
 
     if not is_admin(payload):
-        return jsonify({"error": "Forbidden. Admins only."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Admins only.")
 
     data = request.get_json() or {}
 
@@ -484,14 +489,14 @@ def admin_update_user(user_id: int):
         new_username = data["username"].strip().lower()
         username_error = validate_username(new_username)
         if username_error:
-            return jsonify({"error": username_error}), 400
+            raise SmartRoomExceptions(400, "Bad Request", username_error)
 
         existing = fetch_one(
             "SELECT id FROM users WHERE username = %s AND id <> %s",
             (new_username, user_id),
         )
         if existing:
-            return jsonify({"error": "Username already in use."}), 409
+            raise SmartRoomExceptions(409, "Conflict", "Username already in use.")
 
         fields_to_update.append("username = %s")
         params.append(new_username)
@@ -501,14 +506,14 @@ def admin_update_user(user_id: int):
         new_email = data["email"].strip().lower()
         email_error = validate_email(new_email)
         if email_error:
-            return jsonify({"error": email_error}), 400
+            raise SmartRoomExceptions(400, "Bad Request", email_error)
 
         existing = fetch_one(
             "SELECT id FROM users WHERE email = %s AND id <> %s",
             (new_email, user_id),
         )
         if existing:
-            return jsonify({"error": "Email already in use."}), 409
+            raise SmartRoomExceptions(409, "Conflict", "Email already in use.")
 
         fields_to_update.append("email = %s")
         params.append(new_email)
@@ -523,12 +528,12 @@ def admin_update_user(user_id: int):
     if "role" in data:
         new_role = data["role"]
         if new_role not in ALLOWED_ROLES:
-            return jsonify({"error": "Invalid role value."}), 400
+            raise SmartRoomExceptions(400, "Bad Request", "Invalid role value.")
         fields_to_update.append("role = %s")
         params.append(new_role)
 
     if not fields_to_update:
-        return jsonify({"error": "No valid fields provided to update."}), 400
+        raise SmartRoomExceptions(400, "Bad Request", "No valid fields provided to update.")
 
     set_clause = ", ".join(fields_to_update)
     params.append(user_id)
@@ -542,7 +547,7 @@ def admin_update_user(user_id: int):
 
     row = fetch_one(update_sql, tuple(params))
     if not row:
-        return jsonify({"error": "User not found."}), 404
+        raise SmartRoomExceptions(404, "Not Found", "User not found.")
 
     user = User(
         id=row["id"],
@@ -561,22 +566,22 @@ def admin_update_user(user_id: int):
 # 9. ADMIN: DELETE USER
 # ─────────────────────────────────────────────
 
-@app.route("/users/<int:user_id>", methods=["DELETE"])
+@app.route(f"{API_VERSION}/users/<int:user_id>", methods=["DELETE"])
 def admin_delete_user(user_id: int):
     """
     Admin-only endpoint to delete a specific user by ID.
     """
     payload, error = require_auth()
     if error:
-        return error
+        raise error
 
     if not is_admin(payload):
-        return jsonify({"error": "Forbidden. Admins only."}), 403
+        raise SmartRoomExceptions(403, "Forbidden", "Admins only.")
 
     deleted = execute("DELETE FROM users WHERE id = %s", (user_id,))
     if deleted == 0:
-        return jsonify({"error": "User not found."}), 404
-
+        raise SmartRoomExceptions(404, "Not Found", "User not found.")
+    
     return jsonify({"message": "User deleted successfully."}), 200
 
 
