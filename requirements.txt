@@ -3,3 +3,5 @@ psycopg2-binary
 PyJWT
 python-dotenv
 werkzeug
+requests
+sendgrid>=6.9.0

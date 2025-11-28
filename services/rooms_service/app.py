@@ -17,6 +17,7 @@ from services.rooms_service.db import (init_rooms_table,
                                        update_room_availability,
                                        set_unset_out_of_service
                                        )
+from services.bookings_service.db import fetch_user_contact
 from common.RBAC import (
     require_auth,
     is_human_user,
@@ -28,6 +29,7 @@ from common.RBAC import (
 )
 from common.exeptions import *
 from common.config import API_VERSION
+from common.email_service import send_templated_email, EmailConfigurationError
 
 app = Flask(__name__)
 
@@ -319,8 +321,81 @@ def set_unset_out_of_service_endpoint(room_id):
     updated_room = set_unset_out_of_service(room_id, is_out_of_service)
     if not updated_room:
         raise SmartRoomExceptions(404, "Not Found", "Room not found.")
-    
+
     status = "out of service" if is_out_of_service else "in service"
+
+    if is_out_of_service:
+        bookings = fetch_bookings_for_room(room_id) or []
+        now = datetime.now()
+        for booking_row in bookings:
+            booking = Booking.from_dict(booking_row)
+            if not booking.start_time or booking.start_time <= now:
+                continue
+
+            user_contact = fetch_user_contact(booking.user_id)
+            if not user_contact:
+                app.logger.warning(
+                    "Room %s marked out of service but user %s contact missing for booking %s.",
+                    room_id,
+                    booking.user_id,
+                    booking.id,
+                )
+                continue
+
+            user_email = user_contact.get("email")
+            if not user_email:
+                app.logger.warning(
+                    "Room %s out of service; email missing for user %s (booking %s).",
+                    room_id,
+                    booking.user_id,
+                    booking.id,
+                )
+                continue
+
+            start_display = booking.start_time.strftime("%A, %B %d, %Y at %I:%M %p")
+            end_display = booking.end_time.strftime("%A, %B %d, %Y at %I:%M %p") if booking.end_time else ""
+
+            context = {
+                "first_name": user_contact.get("first_name", ""),
+                "last_name": user_contact.get("last_name", ""),
+                "email": user_email,
+                "room_name": updated_room.get("room_name") or f"Room {room_id}",
+                "start_time": start_display,
+                "end_time": end_display,
+                "booking_id": str(booking.id),
+            }
+
+            try:
+                status_code, message_id = send_templated_email(
+                    to_email=user_email,
+                    subject="Room unavailable for your upcoming booking",
+                    template_name="RoomOutOfService.html",
+                    context=context,
+                )
+                if status_code != 202:
+                    app.logger.warning(
+                        "Out-of-service email returned status %s for booking %s",
+                        status_code,
+                        booking.id,
+                    )
+                else:
+                    app.logger.info(
+                        "Out-of-service email sent for booking %s (message_id=%s)",
+                        booking.id,
+                        message_id,
+                    )
+            except EmailConfigurationError as cfg_err:
+                app.logger.warning(
+                    "Out-of-service email skipped due to configuration issue: %s",
+                    cfg_err,
+                )
+            except Exception as email_err:
+                app.logger.exception(
+                    "Failed to send out-of-service email for booking %s: %s",
+                    booking.id,
+                    email_err,
+                )
+
     return jsonify({
         "message": f"Room {room_id} has been marked as {status}.",
         "room": updated_room

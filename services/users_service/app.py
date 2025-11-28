@@ -4,6 +4,7 @@ from flask import Flask, request, jsonify
 
 from services.users_service.db import init_users_table, fetch_one, fetch_all, execute
 from services.users_service.models import User
+from common.email_service import send_templated_email, EmailConfigurationError
 from common.security import (
     hash_password,
     verify_password,
@@ -15,7 +16,9 @@ from common.RBAC import (
 )
 from common.exeptions import *
 from common.config import API_VERSION
+
 app = Flask(__name__)
+app.logger.setLevel("INFO")
 
 @app.errorhandler(SmartRoomExceptions)
 def handle_smart_room_exception(e):
@@ -199,6 +202,36 @@ def login():
         password_hash="",
         role=row["role"],
     )
+
+    # Fire-and-forget sign-in email; logging captures any send issues without blocking login.
+    try:
+        status_code, message_id = send_templated_email(
+            to_email=user.email,
+            subject="Smart Meeting Rooms sign-in",
+            template_name="SignIn.html",
+            context={
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "username": user.username,
+                "email": user.email,
+            },
+        )
+        if status_code != 202:
+            app.logger.warning(
+                "Sign-in email returned unexpected status %s for user %s",
+                status_code,
+                user.username,
+            )
+        else:
+            app.logger.info(
+                "Sign-in email sent for user %s (message_id=%s)",
+                user.username,
+                message_id,
+            )
+    except EmailConfigurationError as cfg_err:
+        app.logger.warning("Sign-in email skipped: %s", cfg_err)
+    except Exception as email_err:
+        app.logger.exception("Failed to send sign-in email: %s", email_err)
 
     return jsonify({
         "access_token": token,

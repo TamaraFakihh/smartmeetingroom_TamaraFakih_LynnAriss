@@ -106,10 +106,48 @@ def fetch_bookings_for_room(room_id: int) -> list[dict]:
         with conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
-                    "SELECT * FROM bookings WHERE room_id = %s ORDER BY start_time;",
+                    """
+                        SELECT room_name AS name, location
+                        FROM rooms
+                        WHERE room_id = %s;
+                    """,
                     (room_id,),
                 )
                 return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def fetch_user_contact(user_id: int) -> Optional[dict]:
+    """Return the first name, last name, and email for a user."""
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT first_name, last_name, email FROM users WHERE id = %s;",
+                    (user_id,),
+                )
+                return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def fetch_room_details(room_id: int) -> Optional[dict]:
+    """Return the room name and location to enrich notification emails."""
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT room_name AS name, location
+                    FROM rooms
+                    WHERE room_id = %s;
+                    """,
+                    (room_id,),
+                )
+                return cur.fetchone()
     finally:
         conn.close()
 

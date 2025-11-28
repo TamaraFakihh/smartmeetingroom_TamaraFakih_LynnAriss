@@ -6,6 +6,8 @@ from services.bookings_service.db import (
     fetch_booking,
     fetch_all_bookings,
     fetch_bookings_for_user,
+    fetch_user_contact,
+    fetch_room_details,
     create_booking,
     update_booking_times,
     delete_booking,
@@ -22,6 +24,7 @@ from common.RBAC import (
     is_auditor,
 )
 from common.config import API_VERSION
+from common.email_service import send_templated_email, EmailConfigurationError
 
 app = Flask(__name__)
 
@@ -126,6 +129,68 @@ def create_booking_endpoint():
         end_time=row["end_time"],
         created_at=row["created_at"],
     )
+
+    user_contact = fetch_user_contact(user_id)
+    if not user_contact:
+        app.logger.warning(
+            "Booking %s created but user %s contact details missing; skipping email.",
+            booking.id,
+            user_id,
+        )
+    else:
+        room_details = fetch_room_details(room_id) or {}
+        user_email = user_contact.get("email")
+        if not user_email:
+            app.logger.warning(
+                "Booking %s created but email missing for user %s; skipping email.",
+                booking.id,
+                user_id,
+            )
+        else:
+            start_display = booking.start_time.strftime("%A, %B %d, %Y at %I:%M %p")
+            end_display = booking.end_time.strftime("%A, %B %d, %Y at %I:%M %p")
+
+            context = {
+                "first_name": user_contact.get("first_name", ""),
+                "last_name": user_contact.get("last_name", ""),
+                "email": user_email,
+                "room_name": room_details.get("name") or f"Room {room_id}",
+                "room_location": room_details.get("location") or "",
+                "start_time": start_display,
+                "end_time": end_display,
+                "booking_id": str(booking.id),
+            }
+
+            try:
+                status_code, message_id = send_templated_email(
+                    to_email=user_email,
+                    subject="Your Smart Meeting Rooms booking is confirmed",
+                    template_name="BookingConfirmation.html",
+                    context=context,
+                )
+                if status_code != 202:
+                    app.logger.warning(
+                        "Booking email returned status %s for booking %s",
+                        status_code,
+                        booking.id,
+                    )
+                else:
+                    app.logger.info(
+                        "Booking email sent for booking %s (message_id=%s)",
+                        booking.id,
+                        message_id,
+                    )
+            except EmailConfigurationError as cfg_err:
+                app.logger.warning(
+                    "Booking email skipped due to configuration issue: %s",
+                    cfg_err,
+                )
+            except Exception as email_err:
+                app.logger.exception(
+                    "Failed to send booking email for booking %s: %s",
+                    booking.id,
+                    email_err,
+                )
 
     return jsonify({"booking": booking.to_dict()}), 201
 
@@ -293,6 +358,73 @@ def update_booking_endpoint(booking_id: int):
         created_at=updated_row["created_at"],
     )
 
+    user_contact = fetch_user_contact(booking.user_id)
+    if not user_contact:
+        app.logger.warning(
+            "Booking %s updated but user %s contact details missing; skipping email.",
+            booking.id,
+            booking.user_id,
+        )
+    else:
+        user_email = user_contact.get("email")
+        if not user_email:
+            app.logger.warning(
+                "Booking %s updated but email missing for user %s; skipping email.",
+                booking.id,
+                booking.user_id,
+            )
+        else:
+            room_details = fetch_room_details(booking.room_id) or {}
+            start_display = booking.start_time.strftime("%A, %B %d, %Y at %I:%M %p")
+            end_display = booking.end_time.strftime("%A, %B %d, %Y at %I:%M %p")
+
+            updated_by = "you"
+            if current_user_id != booking.user_id:
+                updated_by = payload.get("role", "an administrator")
+
+            context = {
+                "first_name": user_contact.get("first_name", ""),
+                "last_name": user_contact.get("last_name", ""),
+                "email": user_email,
+                "room_name": room_details.get("name") or f"Room {booking.room_id}",
+                "room_location": room_details.get("location") or "",
+                "start_time": start_display,
+                "end_time": end_display,
+                "booking_id": str(booking.id),
+                "updated_by": updated_by,
+            }
+
+            try:
+                status_code, message_id = send_templated_email(
+                    to_email=user_email,
+                    subject="Your Smart Meeting Rooms booking was updated",
+                    template_name="BookingUpdated.html",
+                    context=context,
+                )
+                if status_code != 202:
+                    app.logger.warning(
+                        "Booking update email returned status %s for booking %s",
+                        status_code,
+                        booking.id,
+                    )
+                else:
+                    app.logger.info(
+                        "Booking update email sent for booking %s (message_id=%s)",
+                        booking.id,
+                        message_id,
+                    )
+            except EmailConfigurationError as cfg_err:
+                app.logger.warning(
+                    "Booking update email skipped due to configuration issue: %s",
+                    cfg_err,
+                )
+            except Exception as email_err:
+                app.logger.exception(
+                    "Failed to send booking update email for booking %s: %s",
+                    booking.id,
+                    email_err,
+                )
+
     return jsonify({"booking": booking.to_dict()}), 200
 
 
@@ -326,6 +458,69 @@ def delete_booking_endpoint(booking_id: int):
     deleted = delete_booking(booking_id)
     if deleted == 0:
         raise SmartRoomExceptions(404, "Not Found", "Booking not found.")
+
+    user_contact = fetch_user_contact(row["user_id"])
+    if not user_contact:
+        app.logger.warning(
+            "Booking %s cancelled but user %s contact details missing; skipping email.",
+            booking_id,
+            row["user_id"],
+        )
+    else:
+        user_email = user_contact.get("email")
+        if not user_email:
+            app.logger.warning(
+                "Booking %s cancelled but email missing for user %s; skipping email.",
+                booking_id,
+                row["user_id"],
+            )
+        else:
+            room_details = fetch_room_details(row["room_id"]) or {}
+            start_display = row["start_time"].strftime("%A, %B %d, %Y at %I:%M %p")
+            end_display = row["end_time"].strftime("%A, %B %d, %Y at %I:%M %p")
+
+            context = {
+                "first_name": user_contact.get("first_name", ""),
+                "last_name": user_contact.get("last_name", ""),
+                "email": user_email,
+                "room_name": room_details.get("name") or f"Room {row['room_id']}",
+                "room_location": room_details.get("location") or "",
+                "start_time": start_display,
+                "end_time": end_display,
+                "booking_id": str(row["booking_id"]),
+            }
+
+            try:
+                status_code, message_id = send_templated_email(
+                    to_email=user_email,
+                    subject="Your Smart Meeting Rooms booking was cancelled",
+                    template_name="BookingCancelled.html",
+                    context=context,
+                )
+                if status_code != 202:
+                    app.logger.warning(
+                        "Booking cancellation email returned status %s for booking %s",
+                        status_code,
+                        booking_id,
+                    )
+                else:
+                    app.logger.info(
+                        "Booking cancellation email sent for booking %s (message_id=%s)",
+                        booking_id,
+                        message_id,
+                    )
+            except EmailConfigurationError as cfg_err:
+                app.logger.warning(
+                    "Booking cancellation email skipped due to configuration issue: %s",
+                    cfg_err,
+                )
+            except Exception as email_err:
+                app.logger.exception(
+                    "Failed to send booking cancellation email for booking %s: %s",
+                    booking_id,
+                    email_err,
+                )
+
     return jsonify({"message": "Booking cancelled successfully."}), 200
 
 

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Smart Meeting Rooms Sign In</title>
+    <style>
+        body { font-family: Arial, sans-serif; color: #1f2933; background-color: #f8fafc; margin: 0; padding: 0; }
+        .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; padding: 24px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08); }
+        h1 { color: #0D3B66; }
+        .footer { font-size: 12px; color: #64748b; margin-top: 24px; }
+        a { color: #0D3B66; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome back, {{first_name}}!</h1>
+        <p>Hi {{first_name}} {{last_name}},</p>
+        <p>You just signed in to Smart Meeting Rooms using the username {{username}}</strong>.</p>
+        <p>If this was you, no action is needed. If you did not sign in, please reset your password immediately or contact our support team.</p>
+        <p>You can review your upcoming bookings or explore available rooms at any time from the dashboard.</p>
+        <p>Thank you,<br>Lynn and Tamara &lt;3</p>
+        <div class="footer">
+            <p>This message was sent to {{email}}. Please do not reply directly to this email.</p>
+        </div>
+    </div>
+</body>
+</html>
+

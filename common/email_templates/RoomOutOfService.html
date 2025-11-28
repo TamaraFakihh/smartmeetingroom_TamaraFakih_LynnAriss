@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Room Unavailable Notice</title>
+    <style>
+        body { font-family: Arial, sans-serif; color: #1f2933; background-color: #f8fafc; margin: 0; padding: 0; }
+        .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; padding: 24px; border-radius: 8px; box-shadow: 0 2px 6px rgba(15, 23, 42, 0.1); }
+        h1 { color: #b45309; margin-top: 0; }
+        .detail { margin: 12px 0; }
+        .label { font-weight: bold; color: #0d3b66; }
+        .footer { font-size: 12px; color: #64748b; margin-top: 24px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Room Unavailable</h1>
+        <p>Hi {{first_name}} {{last_name}},</p>
+        <p>We’re sorry to let you know that <strong>{{room_name}}</strong> has been marked as out of service.</p>
+        <p class="detail"><span class="label">Booking ID:</span> {{booking_id}}</p>
+        <p class="detail"><span class="label">Scheduled Start:</span> {{start_time}}</p>
+        <p class="detail"><span class="label">Scheduled End:</span> {{end_time}}</p>
+        <p>Please choose another available room for your meeting. You can manage bookings from the Smart Meeting Rooms dashboard or contact the facility team for assistance.</p>
+        <p>We apologize for the inconvenience.</p>
+        <p>Lynn and Tamara &lt;3</p>
+        <div class="footer">
+            <p>This notice was sent to {{email}}. Please do not reply directly to this email.</p>
+        </div>
+    </div>
+</body>
+</html>
