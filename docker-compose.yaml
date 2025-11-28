@@ -24,6 +24,8 @@ services:
       dockerfile: services/rooms_service/Dockerfile
     ports:
       - "5002:5002"
+    env_file:
+      - .env
     environment:
       - FLASK_ENV=production
       - DATABASE_URL=postgresql://smartroom:smartroom123@postgres:5432/smartroom
@@ -43,6 +45,8 @@ services:
     build:
       context: .
       dockerfile: services/rooms_service/Dockerfile
+    env_file:
+      - .env
     environment:
       - FLASK_ENV=production
       - DATABASE_URL=postgresql://smartroom:smartroom123@postgres:5432/smartroom
@@ -64,6 +68,8 @@ services:
       dockerfile: services/reviews_service/Dockerfile
     ports:
       - "5004:5004"
+    env_file:
+      - .env
     environment:
       - FLASK_ENV=production
       - DATABASE_URL=postgresql://smartroom:smartroom123@postgres:5432/smartroom
@@ -80,6 +86,8 @@ services:
     build:
       context: .
       dockerfile: services/reviews_service/Dockerfile
+    env_file:
+      - .env
     environment:
       - FLASK_ENV=production
       - DATABASE_URL=postgresql://smartroom:smartroom123@postgres:5432/smartroom
@@ -105,8 +113,10 @@ services:
         condition: service_started
     ports:
       - "8080:80"
+      - "8443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
     networks:
       - smartroom_network
     restart: unless-stopped

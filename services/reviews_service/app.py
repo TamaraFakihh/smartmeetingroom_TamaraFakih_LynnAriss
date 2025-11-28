@@ -1,4 +1,8 @@
-from flask import Flask, request, jsonify
+import logging
+import sys
+import time
+import uuid
+from flask import Flask, request, jsonify, g
 from services.reviews_service.db import (
     init_reviews_table,
     create_review,
@@ -26,9 +30,52 @@ from common.config import API_VERSION
 
 app = Flask(__name__)
 
+# ─────────────────────────────────────────
+# Logging configuration (stdout for Docker)
+# ─────────────────────────────────────────
+logger = logging.getLogger("reviews_service")
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+formatter = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
+handler.setFormatter(formatter)
+if not logger.handlers:
+    logger.addHandler(handler)
+logger.propagate = False
+app.logger = logger
+
 @app.errorhandler(SmartRoomExceptions)
 def handle_smart_room_exception(e):
     return jsonify(e.to_dict()), e.status_code
+
+@app.before_request
+def start_audit_logging():
+    g.request_id = str(uuid.uuid4())
+    g.start_time = time.time()
+    app.logger.info(
+        "REQUEST",
+        extra={
+            "request_id": g.request_id,
+            "method": request.method,
+            "path": request.path,
+            "remote_addr": request.remote_addr,
+            "user_agent": request.user_agent.string,
+        },
+    )
+
+@app.after_request
+def end_audit_logging(response):
+    duration = time.time() - g.get("start_time", time.time())
+    app.logger.info(
+        "RESPONSE",
+        extra={
+            "request_id": g.get("request_id"),
+            "status_code": response.status_code,
+            "path": request.path,
+            "duration_ms": int(duration * 1000),
+        },
+    )
+    response.headers["X-Request-ID"] = g.get("request_id", "")
+    return response
 
 # Initialize DB tables once at startup
 init_reviews_table()
