@@ -2,6 +2,7 @@ import logging
 import sys
 import time
 import uuid
+import os
 from flask import Flask, request, jsonify, g
 from services.reviews_service.db import (
     init_reviews_table,
@@ -15,6 +16,7 @@ from services.reviews_service.db import (
     flag_unflag_review,
     fetch_all_reports,
     hide_review,
+    fetch_all_reviews,
 )
 from services.reviews_service.models import Review
 from common.RBAC import (
@@ -40,6 +42,12 @@ formatter = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
 handler.setFormatter(formatter)
 if not logger.handlers:
     logger.addHandler(handler)
+log_dir = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(log_dir, exist_ok=True)
+LOG_FILE_PATH = os.path.join(log_dir, "reviews_service.log")
+file_handler = logging.FileHandler(LOG_FILE_PATH)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 logger.propagate = False
 app.logger = logger
 
@@ -80,6 +88,17 @@ def end_audit_logging(response):
 # Initialize DB tables once at startup
 init_reviews_table()
 init_reports_table()
+
+def _tail_log(file_path: str, max_lines: int) -> list[str]:
+    """
+    Return the last max_lines lines from the given log file.
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+            return lines[-max_lines:]
+    except FileNotFoundError:
+        return []
 
 # ─────────────────────────────────────────────
 # 1. SUBMIT A REVIEW
@@ -317,21 +336,46 @@ def get_all_reports():
         "reports": reports_data
     }), 200
 
+# �"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?
+# 9b. ADMIN: GET ALL REVIEWS
+# �"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?
+
+@app.route(f"{API_VERSION}/reviews", methods=["GET"])
+def get_all_reviews_endpoint():
+    """
+    Admin-only endpoint to fetch all non-hidden reviews.
+    """
+    payload, error = require_auth()
+    if error:
+        raise error
+
+    if not is_admin(payload):
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Admin role required.")
+
+    reviews_data = fetch_all_reviews()
+    reviews = [Review.from_dict(review).to_dict() for review in reviews_data]
+
+    return jsonify({"reviews": reviews}), 200
+
 # ─────────────────────────────────────────────
 # 9. HIDE/UNHIDE A REVIEW
 # ─────────────────────────────────────────────
 @app.route(f"{API_VERSION}/reviews/hide/<int:review_id>", methods=["PATCH"])
 def hide_review_endpoint(review_id):
     """
-    Hide or unhide a review. Moderator access only.
+    Hide or unhide a review.
+    - Regular users can hide their own reviews (cannot unhide once hidden).
+    - Admins/Moderators can hide or unhide any review.
     """
     payload, error = require_auth()
     if error:
         raise error
 
-    # Ensure the user is a moderator
-    if not is_moderator(payload):
-        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Moderator role required.")
+    requester_id = int(payload["sub"])
+
+    review = fetch_review_by_id(review_id)
+    if not review:
+        raise SmartRoomExceptions(404, "Not Found", "Review not found.")
 
     # Get the request data
     data = request.get_json() or {}
@@ -340,16 +384,46 @@ def hide_review_endpoint(review_id):
     if is_hidden is None:
         raise SmartRoomExceptions(400, "Bad Request", "The 'is_hidden' field is required.")
 
+    # Regular users: can hide only their own review, cannot unhide
+    if is_regular(payload):
+        if review["user_id"] != requester_id:
+            raise SmartRoomExceptions(403, "Forbidden", "You can only hide your own reviews.")
+        if is_hidden is False:
+            raise SmartRoomExceptions(403, "Forbidden", "You cannot unhide a review.")
+    else:
+        # Admins/Moderators can hide/unhide any review
+        if not (is_moderator(payload) or is_admin(payload)):
+            raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Admin or Moderator role required.")
+
     # Update the review's hidden status
     updated_review = hide_review(review_id, is_hidden)
-    if not updated_review:
-        raise SmartRoomExceptions(404, "Not Found", "Review not found.")
 
     status = "hidden" if is_hidden else "visible"
     return jsonify({
         "message": f"Review {review_id} has been marked as {status}.",
         "review": updated_review
     }), 200
+
+# ─────────────────────────────────────────────
+# 10. ADMIN: VIEW SERVICE AUDIT LOGS (TAIL)
+# ─────────────────────────────────────────────
+
+@app.route(f"{API_VERSION}/ops/logs", methods=["GET"])
+def get_service_logs():
+    """
+    Return the last N lines from the service log. Admin only.
+    """
+    payload, error = require_auth()
+    if error:
+        raise error
+
+    if not is_admin(payload):
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Admin role required.")
+
+    max_lines = request.args.get("lines", default=200, type=int)
+    max_lines = max(1, min(max_lines or 200, 1000))
+    lines = _tail_log(LOG_FILE_PATH, max_lines)
+    return jsonify({"lines": lines}), 200
 
 # ─────────────────────────────────────────────
 # MAIN

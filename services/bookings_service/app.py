@@ -2,6 +2,7 @@ import logging
 import sys
 import time
 import uuid
+import os
 from datetime import datetime
 from flask import Flask, request, jsonify, g
 
@@ -9,6 +10,7 @@ from services.bookings_service.db import (
     init_bookings_table,
     fetch_booking,
     fetch_all_bookings,
+    fetch_bookings_for_user_with_details,
     fetch_bookings_for_user,
     fetch_user_contact,
     fetch_room_details,
@@ -42,6 +44,12 @@ formatter = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
 handler.setFormatter(formatter)
 if not logger.handlers:
     logger.addHandler(handler)
+log_dir = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(log_dir, exist_ok=True)
+LOG_FILE_PATH = os.path.join(log_dir, "bookings_service.log")
+file_handler = logging.FileHandler(LOG_FILE_PATH)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 logger.propagate = False
 app.logger = logger
 
@@ -81,6 +89,17 @@ def end_audit_logging(response):
 
 # Initialize DB tables once at startup
 init_bookings_table()
+
+def _tail_log(file_path: str, max_lines: int) -> list[str]:
+    """
+    Return the last max_lines lines from the given log file.
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+            return lines[-max_lines:]
+    except FileNotFoundError:
+        return []
 
 # ─────────────────────────────────────────────
 # Utility: datetime parsing & validation
@@ -292,8 +311,9 @@ def get_all_bookings_endpoint():
 
     rows = fetch_all_bookings()
 
-    bookings = [
-        Booking(
+    bookings = []
+    for row in rows:
+        booking = Booking(
             id=row["booking_id"],
             user_id=row["user_id"],
             room_id=row["room_id"],
@@ -301,8 +321,64 @@ def get_all_bookings_endpoint():
             end_time=row["end_time"],
             created_at=row["created_at"],
         ).to_dict()
-        for row in rows
-    ]
+        booking["user"] = {
+            "id": row.get("user_id"),
+            "first_name": row.get("user_first_name"),
+            "last_name": row.get("user_last_name"),
+            "username": row.get("username"),
+            "email": row.get("user_email"),
+        }
+        booking["room"] = {
+            "id": row.get("room_id"),
+            "name": row.get("room_name"),
+            "location": row.get("room_location"),
+        }
+        bookings.append(booking)
+
+    return jsonify({"bookings": bookings}), 200
+
+
+# ─────────────────────────────────────────────
+# 3b. ADMIN: GET BOOKINGS FOR A USER
+# ─────────────────────────────────────────────
+
+@app.route(f"{API_VERSION}/bookings/user/<int:user_id>", methods=["GET"])
+def get_bookings_for_user(user_id: int):
+    """
+    Admin-only endpoint to get all bookings for a specific user.
+    """
+    payload, error = require_auth()
+    if error:
+        return error
+
+    if not is_admin(payload):
+        raise SmartRoomExceptions(403, "Forbidden", "Admins only.")
+
+    rows = fetch_bookings_for_user_with_details(user_id)
+
+    bookings = []
+    for row in rows:
+        booking = Booking(
+            id=row["booking_id"],
+            user_id=row["user_id"],
+            room_id=row["room_id"],
+            start_time=row["start_time"],
+            end_time=row["end_time"],
+            created_at=row["created_at"],
+        ).to_dict()
+        booking["user"] = {
+            "id": row.get("user_id"),
+            "first_name": row.get("user_first_name"),
+            "last_name": row.get("user_last_name"),
+            "username": row.get("username"),
+            "email": row.get("user_email"),
+        }
+        booking["room"] = {
+            "id": row.get("room_id"),
+            "name": row.get("room_name"),
+            "location": row.get("room_location"),
+        }
+        bookings.append(booking)
 
     return jsonify({"bookings": bookings}), 200
 
@@ -620,6 +696,28 @@ def check_room_availability():
         "end_time": end_time.isoformat(),
         "available": not conflict
     }), 200
+
+
+# ─────────────────────────────────────────────
+# 7. ADMIN: VIEW SERVICE AUDIT LOGS (TAIL)
+# ─────────────────────────────────────────────
+
+@app.route(f"{API_VERSION}/ops/logs", methods=["GET"])
+def get_service_logs():
+    """
+    Return the last N lines from the service log. Admin only.
+    """
+    payload, error = require_auth()
+    if error:
+        return error
+
+    if not is_admin(payload):
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Admin role required.")
+
+    max_lines = request.args.get("lines", default=200, type=int)
+    max_lines = max(1, min(max_lines or 200, 1000))
+    lines = _tail_log(LOG_FILE_PATH, max_lines)
+    return jsonify({"lines": lines}), 200
 
 
 # ─────────────────────────────────────────────

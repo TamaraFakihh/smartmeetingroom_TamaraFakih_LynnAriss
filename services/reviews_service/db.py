@@ -146,6 +146,25 @@ def fetch_review_by_room_id(room_id):
     finally:
         conn.close()
 
+
+def fetch_all_reviews():
+    """
+    Fetch all non-hidden reviews across all rooms.
+    """
+    select_sql = """
+    SELECT review_id, room_id, user_id, rating, comment, created_at
+      FROM reviews
+     WHERE is_hidden = FALSE;
+    """
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(select_sql)
+                return cur.fetchall()
+    finally:
+        conn.close()
+
 def init_reports_table():
     """
     Initialize the reports table in the database.

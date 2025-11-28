@@ -2,6 +2,7 @@ import logging
 import sys
 import time
 import uuid
+import os
 from flask import Flask, jsonify, request, g
 from datetime import datetime, timedelta
 from psycopg2.errors import UniqueViolation
@@ -46,6 +47,12 @@ formatter = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
 handler.setFormatter(formatter)
 if not logger.handlers:
     logger.addHandler(handler)
+log_dir = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(log_dir, exist_ok=True)
+LOG_FILE_PATH = os.path.join(log_dir, "rooms_service.log")
+file_handler = logging.FileHandler(LOG_FILE_PATH)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 logger.propagate = False
 app.logger = logger
 
@@ -141,6 +148,17 @@ def _set_cached_room_status(room_id: int, data):
 init_rooms_table()
 init_equipment_table()
 init_room_equipment_table()
+
+def _tail_log(file_path: str, max_lines: int) -> list[str]:
+    """
+    Return the last max_lines lines from the given log file.
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+            return lines[-max_lines:]
+    except FileNotFoundError:
+        return []
 
 # ─────────────────────────────────────────────
 # 1. GET ALLL ROOMS
@@ -541,6 +559,27 @@ def set_unset_out_of_service_endpoint(room_id):
         "message": f"Room {room_id} has been marked as {status}.",
         "room": updated_room
     }), 200
+
+# ─────────────────────────────────────────────
+# 10. ADMIN: VIEW SERVICE AUDIT LOGS (TAIL)
+# ─────────────────────────────────────────────
+
+@app.route(f"{API_VERSION}/ops/logs", methods=["GET"])
+def get_service_logs():
+    """
+    Return the last N lines from the service log. Admin only.
+    """
+    payload, error = require_auth()
+    if error:
+        raise error
+
+    if not is_admin(payload):
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Admin role required.")
+
+    max_lines = request.args.get("lines", default=200, type=int)
+    max_lines = max(1, min(max_lines or 200, 1000))
+    lines = _tail_log(LOG_FILE_PATH, max_lines)
+    return jsonify({"lines": lines}), 200
 
 # ─────────────────────────────────────────────
 # MAIN

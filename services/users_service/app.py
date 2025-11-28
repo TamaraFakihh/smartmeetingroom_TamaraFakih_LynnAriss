@@ -3,10 +3,22 @@ import sys
 import time
 import uuid
 import re
+import secrets
+import hashlib
+import os
+from datetime import datetime, timedelta
 
 from flask import Flask, request, jsonify, g
 
-from services.users_service.db import init_users_table, fetch_one, fetch_all, execute
+from services.users_service.db import (
+    init_users_table,
+    fetch_one,
+    fetch_all,
+    execute,
+    create_reset_token,
+    get_valid_reset_token,
+    mark_reset_token_used,
+)
 from services.users_service.models import User
 from common.email_service import send_templated_email, EmailConfigurationError
 from common.security import (
@@ -33,6 +45,12 @@ formatter = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
 handler.setFormatter(formatter)
 if not logger.handlers:
     logger.addHandler(handler)
+log_dir = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(log_dir, exist_ok=True)
+LOG_FILE_PATH = os.path.join(log_dir, "users_service.log")
+file_handler = logging.FileHandler(LOG_FILE_PATH)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 logger.propagate = False
 app.logger = logger
 
@@ -72,6 +90,17 @@ def end_audit_logging(response):
 
 # Initialize DB tables once at startup (Flask 3 has no before_first_request)
 init_users_table()
+
+def _tail_log(file_path: str, max_lines: int) -> list[str]:
+    """
+    Return the last max_lines lines from the given log file.
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+            return lines[-max_lines:]
+    except FileNotFoundError:
+        return []
 
 # Precompiled regex patterns matching your rules
 USERNAME_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$')
@@ -283,6 +312,125 @@ def login():
         "access_token": token,
         "user": user.to_public_dict()
     }), 200
+
+
+# ─────────────────────────────────────────────
+# 2b. PASSWORD RESET: REQUEST TOKEN
+# ─────────────────────────────────────────────
+
+@app.route(f"{API_VERSION}/auth/password-reset/request", methods=["POST"])
+def request_password_reset():
+    """
+    Request a password reset token. Always returns a generic message.
+    """
+    data = request.get_json() or {}
+    identifier = (data.get("email") or data.get("username") or "").strip().lower()
+    if not identifier:
+        raise SmartRoomExceptions(400, "Bad Request", "Email or username is required.")
+
+    # Find user by email or username
+    user_row = fetch_one(
+        """
+        SELECT id, first_name, last_name, username, email
+          FROM users
+         WHERE lower(email) = %s OR lower(username) = %s
+         LIMIT 1;
+        """,
+        (identifier, identifier),
+    )
+
+    if user_row:
+        # Generate token, store hash, send email best-effort
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        expires_at = datetime.utcnow() + timedelta(minutes=30)
+
+        create_reset_token(user_row["id"], token_hash, expires_at)
+
+        reset_link = request.host_url.rstrip("/") + f"/reset?token={raw_token}"
+        try:
+            send_templated_email(
+                to_email=user_row["email"],
+                subject="Reset your Smart Meeting Rooms password",
+                template_name="PasswordReset.html",
+                context={
+                    "first_name": user_row.get("first_name", ""),
+                    "last_name": user_row.get("last_name", ""),
+                    "username": user_row.get("username", ""),
+                    "reset_link": reset_link,
+                    "expires_minutes": 30,
+                },
+            )
+        except EmailConfigurationError as cfg_err:
+            app.logger.warning("Password reset email skipped: %s", cfg_err)
+        except Exception as email_err:
+            app.logger.exception("Failed to send password reset email: %s", email_err)
+
+    # Always respond generically to avoid user enumeration
+    return jsonify({"message": "If the account exists, a reset link will be sent."}), 200
+
+
+# ─────────────────────────────────────────────
+# 2c. PASSWORD RESET: CONFIRM
+# ─────────────────────────────────────────────
+
+@app.route(f"{API_VERSION}/auth/password-reset/confirm", methods=["POST"])
+def confirm_password_reset():
+    """
+    Confirm a password reset with the provided token and new password.
+    """
+    data = request.get_json() or {}
+    raw_token = data.get("token", "").strip()
+    new_password = data.get("new_password", "")
+
+    if not raw_token or not new_password:
+        raise SmartRoomExceptions(400, "Bad Request", "Token and new_password are required.")
+
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    token_row = get_valid_reset_token(token_hash)
+    if not token_row:
+        raise SmartRoomExceptions(400, "Bad Request", "Invalid or expired reset token.")
+
+    user_id = token_row["user_id"]
+    new_password_hash = hash_password(new_password)
+
+    updated = fetch_one(
+        """
+        UPDATE users
+           SET password_hash = %s
+         WHERE id = %s
+         RETURNING id;
+        """,
+        (new_password_hash, user_id),
+    )
+    if not updated:
+        raise SmartRoomExceptions(404, "Not Found", "User not found.")
+
+    mark_reset_token_used(token_hash)
+
+    return jsonify({"message": "Password reset successful."}), 200
+
+
+# ─────────────────────────────────────────────
+# 2d. ADMIN: VIEW SERVICE AUDIT LOGS (TAIL)
+# ─────────────────────────────────────────────
+
+@app.route(f"{API_VERSION}/ops/logs", methods=["GET"])
+def get_service_logs():
+    """
+    Return the last N lines from the service log. Admin only.
+    """
+    payload, error = require_auth()
+    if error:
+        raise error
+
+    if not is_admin(payload):
+        raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Admin role required.")
+
+    max_lines = request.args.get("lines", default=200, type=int)
+    max_lines = max(1, min(max_lines or 200, 1000))
+    lines = _tail_log(LOG_FILE_PATH, max_lines)
+    return jsonify({"lines": lines}), 200
 
 
 # ─────────────────────────────────────────────

@@ -79,7 +79,63 @@ def fetch_all_bookings() -> list[dict]:
     try:
         with conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT * FROM bookings ORDER BY start_time;")
+                cur.execute(
+                    """
+                    SELECT 
+                        b.booking_id,
+                        b.user_id,
+                        b.room_id,
+                        b.start_time,
+                        b.end_time,
+                        b.created_at,
+                        u.first_name AS user_first_name,
+                        u.last_name  AS user_last_name,
+                        u.username   AS username,
+                        u.email      AS user_email,
+                        r.room_name  AS room_name,
+                        r.location   AS room_location
+                    FROM bookings b
+                    LEFT JOIN users u ON u.id = b.user_id
+                    LEFT JOIN rooms r ON r.room_id = b.room_id
+                    ORDER BY b.start_time;
+                    """
+                )
+                return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def fetch_bookings_for_user_with_details(user_id: int) -> list[dict]:
+    """
+    Fetch all bookings for a given user, including user and room details.
+    """
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT 
+                        b.booking_id,
+                        b.user_id,
+                        b.room_id,
+                        b.start_time,
+                        b.end_time,
+                        b.created_at,
+                        u.first_name AS user_first_name,
+                        u.last_name  AS user_last_name,
+                        u.username   AS username,
+                        u.email      AS user_email,
+                        r.room_name  AS room_name,
+                        r.location   AS room_location
+                    FROM bookings b
+                    LEFT JOIN users u ON u.id = b.user_id
+                    LEFT JOIN rooms r ON r.room_id = b.room_id
+                    WHERE b.user_id = %s
+                    ORDER BY b.start_time;
+                    """,
+                    (user_id,),
+                )
                 return cur.fetchall()
     finally:
         conn.close()
