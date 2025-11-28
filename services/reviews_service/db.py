@@ -26,6 +26,8 @@ def init_reviews_table():
         FOREIGN KEY (room_id) REFERENCES rooms(room_id),
         FOREIGN KEY (user_id) REFERENCES users(id)
     );
+
+    CREATE INDEX IF NOT EXISTS idx_reviews_room_id ON reviews (room_id);
     """
 
     conn = get_connection()

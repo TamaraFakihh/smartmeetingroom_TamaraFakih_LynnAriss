@@ -39,6 +39,25 @@ services:
       - smartroom_network
     restart: unless-stopped
 
+  rooms_service_replica:
+    build:
+      context: .
+      dockerfile: services/rooms_service/Dockerfile
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=postgresql://smartroom:smartroom123@postgres:5432/smartroom
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change_this_in_production}
+      - JWT_EXP_MINUTES=${JWT_EXP_MINUTES:-60}
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+      - SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL}
+      - SENDGRID_FROM_NAME=${SENDGRID_FROM_NAME}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - smartroom_network
+    restart: unless-stopped
+
   reviews_service:
     build:
       context: .
@@ -53,6 +72,41 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - smartroom_network
+    restart: unless-stopped
+
+  reviews_service_replica:
+    build:
+      context: .
+      dockerfile: services/reviews_service/Dockerfile
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=postgresql://smartroom:smartroom123@postgres:5432/smartroom
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change_this_in_production}
+      - JWT_EXP_MINUTES=${JWT_EXP_MINUTES:-60}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - smartroom_network
+    restart: unless-stopped
+
+  nginx_lb:
+    image: nginx:alpine
+    depends_on:
+      rooms_service:
+        condition: service_started
+      rooms_service_replica:
+        condition: service_started
+      reviews_service:
+        condition: service_started
+      reviews_service_replica:
+        condition: service_started
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
     networks:
       - smartroom_network
     restart: unless-stopped

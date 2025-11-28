@@ -26,6 +26,11 @@ def init_rooms_table():
         is_available BOOLEAN DEFAULT TRUE,
         is_out_of_service BOOLEAN DEFAULT FALSE
     );
+
+    CREATE INDEX IF NOT EXISTS idx_rooms_room_name ON rooms (room_name);
+    CREATE INDEX IF NOT EXISTS idx_rooms_capacity ON rooms (capacity);
+    CREATE INDEX IF NOT EXISTS idx_rooms_location ON rooms (location);
+    CREATE INDEX IF NOT EXISTS idx_rooms_availability ON rooms (is_available, is_out_of_service);
     """
 
     conn = get_connection()

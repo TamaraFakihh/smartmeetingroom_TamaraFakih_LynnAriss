@@ -39,6 +39,12 @@ def init_bookings_table():
 
     CREATE INDEX IF NOT EXISTS idx_bookings_room_time
         ON bookings (room_id, start_time, end_time);
+
+    CREATE INDEX IF NOT EXISTS idx_bookings_user_id
+        ON bookings (user_id);
+
+    CREATE INDEX IF NOT EXISTS idx_bookings_start_time
+        ON bookings (start_time);
     """
 
     conn = get_connection()

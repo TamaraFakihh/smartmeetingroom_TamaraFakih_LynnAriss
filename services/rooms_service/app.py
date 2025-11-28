@@ -1,5 +1,5 @@
 from flask import Flask, jsonify, request
-from datetime import datetime
+from datetime import datetime, timedelta
 from psycopg2.errors import UniqueViolation
 from services.rooms_service.models import Room
 from services.rooms_service.db import (init_rooms_table,
@@ -36,6 +36,60 @@ app = Flask(__name__)
 def handle_smart_room_exception(e):
     return jsonify(e.to_dict()), e.status_code
 
+# Simple in-memory cache for read-heavy endpoints
+CACHE_TTL_SECONDS = 30
+STATUS_CACHE_TTL_SECONDS = 15
+_rooms_cache_all = {"data": None, "expires_at": None}
+_room_cache_by_id = {}
+_room_status_cache = {}
+
+def _now_utc():
+    return datetime.utcnow()
+
+def _get_cached_all_rooms():
+    entry = _rooms_cache_all
+    if entry["data"] is not None and entry["expires_at"] and entry["expires_at"] > _now_utc():
+        return entry["data"]
+    return None
+
+def _set_cached_all_rooms(data):
+    _rooms_cache_all["data"] = data
+    _rooms_cache_all["expires_at"] = _now_utc() + timedelta(seconds=CACHE_TTL_SECONDS)
+
+def _get_cached_room(room_id: int):
+    entry = _room_cache_by_id.get(room_id)
+    if entry and entry["expires_at"] and entry["expires_at"] > _now_utc():
+        return entry["data"]
+    return None
+
+def _set_cached_room(room_id: int, data):
+    _room_cache_by_id[room_id] = {
+        "data": data,
+        "expires_at": _now_utc() + timedelta(seconds=CACHE_TTL_SECONDS),
+    }
+
+def _invalidate_room_cache(room_id: int | None = None):
+    _rooms_cache_all["data"] = None
+    _rooms_cache_all["expires_at"] = None
+    if room_id is None:
+        _room_cache_by_id.clear()
+        _room_status_cache.clear()
+    else:
+        _room_cache_by_id.pop(room_id, None)
+        _room_status_cache.pop(room_id, None)
+
+def _get_cached_room_status(room_id: int):
+    entry = _room_status_cache.get(room_id)
+    if entry and entry["expires_at"] and entry["expires_at"] > _now_utc():
+        return entry["data"]
+    return None
+
+def _set_cached_room_status(room_id: int, data):
+    _room_status_cache[room_id] = {
+        "data": data,
+        "expires_at": _now_utc() + timedelta(seconds=STATUS_CACHE_TTL_SECONDS),
+    }
+
 # Initialize DB tables once at startup (Flask 3 has no before_first_request)
 init_rooms_table()
 init_equipment_table()
@@ -50,6 +104,10 @@ def get_all_rooms():
     Fetch all rooms from the database.
     Returns a list of rooms with their details.
     """
+    cached_rooms = _get_cached_all_rooms()
+    if cached_rooms is not None:
+        return jsonify({"rooms": cached_rooms}), 200
+
     rooms = fetch_all_rooms()
     if not rooms:
         raise SmartRoomExceptions(404, "Not Found", "No rooms found.")
@@ -58,6 +116,7 @@ def get_all_rooms():
         room_obj = Room.room_with_equipment_dict(rooms[i], equipments)
         rooms[i] = room_obj.to_dict()
 
+    _set_cached_all_rooms(rooms)
     return jsonify({"rooms": rooms}), 200
 
 # ─────────────────────────────────────────────
@@ -75,6 +134,10 @@ def get_room(room_id):
     
     if not is_human_user(payload):
         raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Human user role required.")
+
+    cached_room = _get_cached_room(room_id)
+    if cached_room is not None:
+        return jsonify({"room": cached_room}), 200
     
     room = fetch_room(room_id)
     if not room:
@@ -82,7 +145,9 @@ def get_room(room_id):
     equipments = fetch_equipment_for_room(room_id)
     room_obj = Room.room_with_equipment_dict(room, equipments)
 
-    return jsonify({"room": room_obj.to_dict()}), 200
+    room_dict = room_obj.to_dict()
+    _set_cached_room(room_id, room_dict)
+    return jsonify({"room": room_dict}), 200
 
 # ─────────────────────────────────────────────
 # 3. ADD NEW ROOM
@@ -128,6 +193,7 @@ def add_room():
 
     equipment_with_details = fetch_equipment_for_room(room_row["room_id"])
     room_obj = Room.room_with_equipment_dict(room_row, equipment_with_details)
+    _invalidate_room_cache()
     raise SmartRoomExceptions(201, "Created", {"room": room_obj.to_dict()})
 
 # ─────────────────────────────────────────────
@@ -182,6 +248,7 @@ def update_room_details(current_name):
 
     equipment_with_details = fetch_equipment_for_room(updated_room["room_id"])
     room_obj = Room.room_with_equipment_dict(updated_room, equipment_with_details)
+    _invalidate_room_cache(updated_room["room_id"])
     return jsonify({"room": room_obj.to_dict()}), 200
 
 # ─────────────────────────────────────────────
@@ -201,6 +268,7 @@ def delete_room_endpoint(room_id: int):
     deleted = delete_room(room_id)
     if not deleted:
         raise SmartRoomExceptions(404, "Not Found", "Room not found.")
+    _invalidate_room_cache(room_id)
     return jsonify({"message": "Room deleted successfully."}), 200
 
 # ─────────────────────────────────────────────
@@ -218,6 +286,10 @@ def get_room_status(room_id: int):
     
     if not read_only(payload):
         raise SmartRoomExceptions(403, "Forbidden", "Unauthorized. Auditor or Regular role required.")  
+
+    cached_status = _get_cached_room_status(room_id)
+    if cached_status is not None:
+        return jsonify(cached_status), 200
     
     # Verify room exists
     room = fetch_room(room_id)
@@ -265,7 +337,7 @@ def get_room_status(room_id: int):
             "end_time": end_of_day.isoformat()
         })
 
-    return jsonify({
+    response_payload = {
         "room_id": room_id,
         "room_name": room.get("room_name"),
         "room_available": len(availability_intervals) > 0,
@@ -282,7 +354,10 @@ def get_room_status(room_id: int):
             if b.get("start_time") and b.get("start_time").date() == today
         ],
         "availability_intervals": availability_intervals
-    }), 200
+    }
+
+    _set_cached_room_status(room_id, response_payload)
+    return jsonify(response_payload), 200
 
 # ─────────────────────────────────────────────
 # 7. TOGGLE ROOM AVAILABILITY
@@ -308,6 +383,7 @@ def toggle_room_availability(room_id):
     new_availability = not room["is_available"]
     update_room_availability(room_id, new_availability)
 
+    _invalidate_room_cache(room_id)
     return jsonify({
         "message": f"Room {room_id} availability toggled.",
         "room_id": room_id,
@@ -413,6 +489,7 @@ def set_unset_out_of_service_endpoint(room_id):
                     email_err,
                 )
 
+    _invalidate_room_cache(room_id)
     return jsonify({
         "message": f"Room {room_id} has been marked as {status}.",
         "room": updated_room

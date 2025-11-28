@@ -145,3 +145,14 @@ CREATE TABLE IF NOT EXISTS reports (
     FOREIGN KEY (review_id) REFERENCES reviews(review_id) ON DELETE CASCADE,
     FOREIGN KEY (reporter_user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- =====================================================
+-- INDEXES FOR PERFORMANCE
+-- =====================================================
+-- Rooms: help filters by capacity/location
+CREATE INDEX IF NOT EXISTS idx_rooms_room_name ON rooms (room_name);
+CREATE INDEX IF NOT EXISTS idx_rooms_capacity ON rooms (capacity);
+CREATE INDEX IF NOT EXISTS idx_rooms_location ON rooms (location);
+
+-- Reviews: speed up lookups by room
+CREATE INDEX IF NOT EXISTS idx_reviews_room_id ON reviews (room_id);
