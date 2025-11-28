@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=smartroom
+      - POSTGRES_PASSWORD=smartroom123
+      - POSTGRES_DB=smartroom
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    networks:
+      - smartroom_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smartroom"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rooms_service:
+    build:
+      context: .
+      dockerfile: services/rooms_service/Dockerfile
+    ports:
+      - "5002:5002"
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=postgresql://smartroom:smartroom123@postgres:5432/smartroom
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change_this_in_production}
+      - JWT_EXP_MINUTES=${JWT_EXP_MINUTES:-60}
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+      - SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL}
+      - SENDGRID_FROM_NAME=${SENDGRID_FROM_NAME}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - smartroom_network
+    restart: unless-stopped
+
+  reviews_service:
+    build:
+      context: .
+      dockerfile: services/reviews_service/Dockerfile
+    ports:
+      - "5004:5004"
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=postgresql://smartroom:smartroom123@postgres:5432/smartroom
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change_this_in_production}
+      - JWT_EXP_MINUTES=${JWT_EXP_MINUTES:-60}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - smartroom_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  smartroom_network:
+    driver: bridge

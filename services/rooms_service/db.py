@@ -1,7 +1,9 @@
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from common.config import DATABASE_URL
+import os
 
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://smartroom:smartroom123@localhost:5432/smartroom")
 
 def get_connection():
     """
@@ -21,7 +23,8 @@ def init_rooms_table():
         room_name TEXT NOT NULL UNIQUE,
         capacity INT NOT NULL CHECK (capacity > 0),
         location TEXT,
-        is_available BOOLEAN DEFAULT TRUE
+        is_available BOOLEAN DEFAULT TRUE,
+        is_out_of_service BOOLEAN DEFAULT FALSE
     );
     """
 
@@ -40,8 +43,8 @@ def init_equipment_table():
     """
     create_table_sql = """
     CREATE TABLE IF NOT EXISTS equipment (
-        equip_id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE
+        equipment_id SERIAL PRIMARY KEY,
+        equipment_name TEXT NOT NULL UNIQUE
     );
     """
 
@@ -64,10 +67,9 @@ def init_room_equipment_table():
         room_id INT NOT NULL,
         equipment_id INT NOT NULL,
         quantity INT NOT NULL CHECK (quantity > 0),
-        is_out_of_service BOOLEAN DEFAULT FALSE,
         PRIMARY KEY (room_id, equipment_id),
         FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE,
-        FOREIGN KEY (equipment_id) REFERENCES equipment(equip_id) ON DELETE CASCADE
+        FOREIGN KEY (equipment_id) REFERENCES equipment(equipment_id) ON DELETE CASCADE
     );
     """
 
@@ -81,14 +83,14 @@ def init_room_equipment_table():
 
 def fetch_equipment_for_room(room_id):
     """
-    Return the equipment rows (equip_id, name, quantity) for the given room.
+    Return the equipment rows (equipment_id, equipment_name, quantity) for the given room.
     """
     fetch_equipment_for_room_sql = """
-        SELECT e.equip_id,
-               e.name,
+        SELECT e.equipment_id,
+               e.equipment_name,
                re.quantity
           FROM equipment e
-          JOIN room_equipment re ON e.equip_id = re.equipment_id
+          JOIN room_equipment re ON e.equipment_id = re.equipment_id
          WHERE re.room_id = %s;
     """
     conn = get_connection()
@@ -156,9 +158,9 @@ def get_create_equipment(equipment_name):
     Get an equipment by name, or create it if it does not exist.
     Returns the equipment as a dictionary.
     """
-    select_sql = "SELECT * FROM equipment WHERE name = %s;"
+    select_sql = "SELECT * FROM equipment WHERE equipment_name = %s;"
     insert_equipment_sql = """
-    INSERT INTO equipment (name)
+    INSERT INTO equipment (equipment_name)
     VALUES (%s)
     RETURNING *;
     """
@@ -187,16 +189,16 @@ def set_room_equipment(room_id, equipments):
                     name = entry["name"].strip()
                     quantity = entry["quantity"]
 
-                    cur.execute("SELECT equip_id FROM equipment WHERE name = %s;", (name,))
+                    cur.execute("SELECT equipment_id FROM equipment WHERE equipment_name = %s;", (name,))
                     row = cur.fetchone()
                     if row:
-                        equipment_id = row["equip_id"]
+                        equipment_id = row["equipment_id"]
                     else:
                         cur.execute(
-                            "INSERT INTO equipment (name) VALUES (%s) RETURNING equip_id;",
+                            "INSERT INTO equipment (equipment_name) VALUES (%s) RETURNING equipment_id;",
                             (name,)
                         )
-                        equipment_id = cur.fetchone()["equip_id"]
+                        equipment_id = cur.fetchone()["equipment_id"]
 
                     cur.execute(
                         """
@@ -280,10 +282,10 @@ def fetch_available_rooms(min_capacity=None, location=None, required_equipment=N
         JOIN (
             SELECT re.room_id
               FROM room_equipment re
-              JOIN equipment e ON e.equip_id = re.equipment_id
-             WHERE LOWER(e.name) IN ({placeholders})
+              JOIN equipment e ON e.equipment_id = re.equipment_id
+             WHERE LOWER(e.equipment_name) IN ({placeholders})
           GROUP BY re.room_id
-            HAVING COUNT(DISTINCT LOWER(e.name)) = {len(eq_names)}
+            HAVING COUNT(DISTINCT LOWER(e.equipment_name)) = {len(eq_names)}
         ) rq ON rq.room_id = r.room_id
         """
         params.extend(eq_names)  # equipment params first
@@ -359,6 +361,23 @@ def set_unset_out_of_service(room_id, is_out_of_service):
         with conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(update_sql, (is_out_of_service, room_id))
+                return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def fetch_user_contact(user_id):
+    """
+    Return the first name, last name, and email for a user.
+    """
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT first_name, last_name, email FROM users WHERE id = %s;",
+                    (user_id,),
+                )
                 return cur.fetchone()
     finally:
         conn.close()

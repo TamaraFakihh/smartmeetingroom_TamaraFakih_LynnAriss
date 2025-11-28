@@ -1,3 +1,6 @@
+-- =====================================================
+-- USERS TABLE
+-- =====================================================
 CREATE TABLE IF NOT EXISTS users (
     -- Primary key
     id SERIAL PRIMARY KEY,
@@ -62,4 +65,83 @@ CREATE TABLE IF NOT EXISTS users (
             'auditor',
             'service_account'
         ))
+);
+
+-- =====================================================
+-- ROOMS TABLE
+-- =====================================================
+CREATE TABLE IF NOT EXISTS rooms (
+    room_id SERIAL PRIMARY KEY,
+    room_name TEXT NOT NULL UNIQUE,
+    capacity INT NOT NULL CHECK (capacity > 0),
+    location TEXT,
+    is_available BOOLEAN DEFAULT TRUE,
+    is_out_of_service BOOLEAN DEFAULT FALSE
+);
+
+-- =====================================================
+-- EQUIPMENT TABLE
+-- =====================================================
+CREATE TABLE IF NOT EXISTS equipment (
+    equipment_id SERIAL PRIMARY KEY,
+    equipment_name TEXT NOT NULL UNIQUE
+);
+
+-- =====================================================
+-- ROOM_EQUIPMENT TABLE (Many-to-Many Relationship)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS room_equipment (
+    room_id INT NOT NULL,
+    equipment_id INT NOT NULL,
+    quantity INT NOT NULL CHECK (quantity > 0),
+    PRIMARY KEY (room_id, equipment_id),
+    FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE,
+    FOREIGN KEY (equipment_id) REFERENCES equipment(equipment_id) ON DELETE CASCADE
+);
+
+-- =====================================================
+-- REVIEWS TABLE
+-- =====================================================
+CREATE TABLE IF NOT EXISTS reviews (
+    review_id SERIAL PRIMARY KEY,
+    room_id INT NOT NULL,
+    user_id INT NOT NULL,
+    rating INT CHECK (rating BETWEEN 1 AND 5),
+    comment TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_flagged BOOLEAN DEFAULT FALSE,
+    is_hidden BOOLEAN DEFAULT FALSE,
+    FOREIGN KEY (room_id) REFERENCES rooms(room_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- =====================================================
+-- REPORT REASON ENUM
+-- =====================================================
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'report_reason_enum') THEN
+        CREATE TYPE report_reason_enum AS ENUM (
+            'Inaccurate Review',
+            'Harassment / Offensive Content',
+            'Misleading Information',
+            'Spam / Promotional Content',
+            'Personal or Private Information',
+            'Unfair Rating',
+            'Not Relevant to the Room'
+        );
+    END IF;
+END $$;
+
+-- =====================================================
+-- REPORTS TABLE
+-- =====================================================
+CREATE TABLE IF NOT EXISTS reports (
+    report_id SERIAL PRIMARY KEY,
+    review_id INT NOT NULL,
+    reporter_user_id INT NOT NULL,
+    report_reason report_reason_enum NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (review_id) REFERENCES reviews(review_id) ON DELETE CASCADE,
+    FOREIGN KEY (reporter_user_id) REFERENCES users(id) ON DELETE CASCADE
 );

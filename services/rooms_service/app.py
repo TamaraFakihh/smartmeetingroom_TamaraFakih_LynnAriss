@@ -2,7 +2,6 @@ from flask import Flask, jsonify, request
 from datetime import datetime
 from psycopg2.errors import UniqueViolation
 from services.rooms_service.models import Room
-from services.bookings_service.models import Booking
 from services.rooms_service.db import (init_rooms_table,
                                        init_equipment_table,
                                        init_room_equipment_table,
@@ -15,9 +14,9 @@ from services.rooms_service.db import (init_rooms_table,
                                        delete_room,
                                        fetch_bookings_for_room,
                                        update_room_availability,
-                                       set_unset_out_of_service
+                                       set_unset_out_of_service,
+                                       fetch_user_contact
                                        )
-from services.bookings_service.db import fetch_user_contact
 from common.RBAC import (
     require_auth,
     is_human_user,
@@ -235,9 +234,11 @@ def get_room_status(room_id: int):
 
     booked_ranges = []
     for b in bookings:
-        booking = Booking.from_dict(b)
-        if booking.start_time and booking.end_time and booking.start_time.date() == today and booking.end_time.date() == today:
-            booked_ranges.append((booking.start_time, booking.end_time))
+        # Parse booking dict directly
+        start_time = b.get("start_time")
+        end_time = b.get("end_time")
+        if start_time and end_time and start_time.date() == today and end_time.date() == today:
+            booked_ranges.append((start_time, end_time))
 
 
     # Sort by start time
@@ -268,7 +269,18 @@ def get_room_status(room_id: int):
         "room_id": room_id,
         "room_name": room.get("room_name"),
         "room_available": len(availability_intervals) > 0,
-        "bookings": [Booking.from_dict(r).to_dict() for r in bookings if Booking.from_dict(r).start_time.date() == today],
+        "bookings": [
+            {
+                "id": b.get("booking_id"),
+                "user_id": b.get("user_id"),
+                "room_id": b.get("room_id"),
+                "start_time": b.get("start_time").isoformat() if b.get("start_time") else None,
+                "end_time": b.get("end_time").isoformat() if b.get("end_time") else None,
+                "created_at": b.get("created_at").isoformat() if b.get("created_at") else None
+            }
+            for b in bookings
+            if b.get("start_time") and b.get("start_time").date() == today
+        ],
         "availability_intervals": availability_intervals
     }), 200
 
@@ -328,17 +340,22 @@ def set_unset_out_of_service_endpoint(room_id):
         bookings = fetch_bookings_for_room(room_id) or []
         now = datetime.now()
         for booking_row in bookings:
-            booking = Booking.from_dict(booking_row)
-            if not booking.start_time or booking.start_time <= now:
+            # Parse booking dict directly
+            booking_id = booking_row.get("booking_id")
+            user_id = booking_row.get("user_id")
+            start_time = booking_row.get("start_time")
+            end_time = booking_row.get("end_time")
+            
+            if not start_time or start_time <= now:
                 continue
 
-            user_contact = fetch_user_contact(booking.user_id)
+            user_contact = fetch_user_contact(user_id)
             if not user_contact:
                 app.logger.warning(
                     "Room %s marked out of service but user %s contact missing for booking %s.",
                     room_id,
-                    booking.user_id,
-                    booking.id,
+                    user_id,
+                    booking_id,
                 )
                 continue
 
@@ -347,13 +364,13 @@ def set_unset_out_of_service_endpoint(room_id):
                 app.logger.warning(
                     "Room %s out of service; email missing for user %s (booking %s).",
                     room_id,
-                    booking.user_id,
-                    booking.id,
+                    user_id,
+                    booking_id,
                 )
                 continue
 
-            start_display = booking.start_time.strftime("%A, %B %d, %Y at %I:%M %p")
-            end_display = booking.end_time.strftime("%A, %B %d, %Y at %I:%M %p") if booking.end_time else ""
+            start_display = start_time.strftime("%A, %B %d, %Y at %I:%M %p")
+            end_display = end_time.strftime("%A, %B %d, %Y at %I:%M %p") if end_time else ""
 
             context = {
                 "first_name": user_contact.get("first_name", ""),
@@ -362,7 +379,7 @@ def set_unset_out_of_service_endpoint(room_id):
                 "room_name": updated_room.get("room_name") or f"Room {room_id}",
                 "start_time": start_display,
                 "end_time": end_display,
-                "booking_id": str(booking.id),
+                "booking_id": str(booking_id),
             }
 
             try:
@@ -376,12 +393,12 @@ def set_unset_out_of_service_endpoint(room_id):
                     app.logger.warning(
                         "Out-of-service email returned status %s for booking %s",
                         status_code,
-                        booking.id,
+                        booking_id,
                     )
                 else:
                     app.logger.info(
                         "Out-of-service email sent for booking %s (message_id=%s)",
-                        booking.id,
+                        booking_id,
                         message_id,
                     )
             except EmailConfigurationError as cfg_err:
@@ -392,7 +409,7 @@ def set_unset_out_of_service_endpoint(room_id):
             except Exception as email_err:
                 app.logger.exception(
                     "Failed to send out-of-service email for booking %s: %s",
-                    booking.id,
+                    booking_id,
                     email_err,
                 )
 
