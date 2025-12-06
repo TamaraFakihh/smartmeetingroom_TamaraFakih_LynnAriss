@@ -2,9 +2,9 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
-      - POSTGRES_USER=smartroom
-      - POSTGRES_PASSWORD=smartroom123
-      - POSTGRES_DB=smartroom
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=MyStrongPass123!
+      - POSTGRES_DB=smart_meeting_db
     ports:
       - "5432:5432"
     volumes:
@@ -24,6 +24,52 @@ services:
       dockerfile: services/rooms_service/Dockerfile
     ports:
       - "5002:5002"
+    env_file:
+      - .env
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=postgresql://smartroom:smartroom123@postgres:5432/smartroom
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change_this_in_production}
+      - JWT_EXP_MINUTES=${JWT_EXP_MINUTES:-60}
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+      - SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL}
+      - SENDGRID_FROM_NAME=${SENDGRID_FROM_NAME}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - smartroom_network
+    restart: unless-stopped
+
+  users_service:
+    build:
+      context: .
+      dockerfile: services/users_service/Dockerfile
+    ports:
+      - "5001:5001"
+    env_file:
+      - .env
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=postgresql://smartroom:smartroom123@postgres:5432/smartroom
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change_this_in_production}
+      - JWT_EXP_MINUTES=${JWT_EXP_MINUTES:-60}
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+      - SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL}
+      - SENDGRID_FROM_NAME=${SENDGRID_FROM_NAME}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - smartroom_network
+    restart: unless-stopped
+
+  bookings_service:
+    build:
+      context: .
+      dockerfile: services/bookings_service/Dockerfile
+    ports:
+      - "5003:5003"
     env_file:
       - .env
     environment:
